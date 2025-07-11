@@ -1,3 +1,8 @@
-import os, sys
+"""
+Audiblez - A program to convert e-books into audiobooks using
+Chatterbox-TTS models for high-quality text-to-speech synthesis.
+"""
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
+__version__ = "0.5.0"
+__author__ = "Claudio Santini"
+__email__ = "hireclaudio@gmail.com"

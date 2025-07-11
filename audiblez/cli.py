@@ -1,42 +1,46 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""Command-line interface for Audiblez."""
+
 import argparse
 import sys
-import torch # Added for torch.set_default_device and torch.cuda.is_available
+from typing import Dict, Any
 
-from audiblez.voices import voices, available_voices_str
-from audiblez.database import load_all_user_settings # Added
+import torch
 
-def cli_main():
-    voices_str = ', '.join(voices)
-    epilog = ('example:\n' +
-              '  audiblez book.epub -l en-us -v af_sky\n\n' +
-              'to run GUI just run:\n'
-              '  audiblez-ui\n\n' +
-              'available voices:\n' +
-              available_voices_str)
+from audiblez.database import load_all_user_settings
+from audiblez.core import main
+
+def _parse_speed_setting(speed_value: Any) -> float:
+    """Parse and validate speed setting from database."""
+    try:
+        return float(speed_value) if speed_value is not None else 1.0
+    except (ValueError, TypeError):
+        return 1.0
+
+def cli_main() -> None:
+    """Main entry point for the command-line interface."""
+    
+    epilog = (
+        'example:\n'
+        '  audiblez book.epub --pick\n\n'
+        'to run GUI just run:\n'
+        '  audiblez-ui\n\n'
+        'Note: Chatterbox-TTS uses audio prompt files for voice cloning.\n'
+        'Voice selection is handled through the GUI or audio prompt files.'
+    )
 
     # Load settings from database
-    db_settings = load_all_user_settings()
-    if not db_settings: # Ensure it's a dict
-        db_settings = {}
-
-    default_voice_from_db = db_settings.get('voice', 'af_sky')
-    default_speed_from_db = db_settings.get('speed', 1.0)
-    try:
-        # Ensure speed is float, as DB might store as REAL or text if schema is loose
-        default_speed_from_db = float(default_speed_from_db) if default_speed_from_db is not None else 1.0
-    except ValueError:
-        default_speed_from_db = 1.0
-
+    db_settings: Dict[str, Any] = load_all_user_settings() or {}
+    default_speed_from_db: float = _parse_speed_setting(db_settings.get('speed', 1.0))
 
     parser = argparse.ArgumentParser(epilog=epilog, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('epub_file_path', help='Path to the epub file')
-    parser.add_argument('-v', '--voice', default=default_voice_from_db, help=f'Choose narrating voice: {voices_str} (default: {default_voice_from_db})')
-    parser.add_argument('-p', '--pick', default=False, help=f'Interactively select which chapters to read in the audiobook', action='store_true')
+    parser.add_argument('-p', '--pick', default=False, help='Interactively select which chapters to read in the audiobook', action='store_true')
     parser.add_argument('-s', '--speed', default=default_speed_from_db, help=f'Set speed from 0.5 to 2.0 (default: {default_speed_from_db})', type=float)
-    # For CUDA, default is False. We handle DB setting after parsing args.
-    parser.add_argument('-c', '--cuda', default=False, help=f'Use GPU via Cuda in Torch if available', action='store_true')
+    parser.add_argument('-c', '--cuda', default=False, help='Use GPU via Cuda in Torch if available', action='store_true')
     parser.add_argument('-o', '--output', default='.', help='Output folder for the audiobook and temporary files', metavar='FOLDER')
+    parser.add_argument('--voice-sample', help='Path to audio file for voice cloning (optional)', metavar='FILE')
 
     if len(sys.argv) == 1:
         parser.print_help(sys.stderr)
@@ -44,7 +48,7 @@ def cli_main():
     args = parser.parse_args()
 
     # CUDA/Engine Handling Logic
-    use_cuda_from_cli = args.cuda # True if --cuda is present
+    use_cuda_from_cli = args.cuda
     engine_from_db = db_settings.get('engine')
 
     if use_cuda_from_cli:
@@ -66,11 +70,14 @@ def cli_main():
         print('Defaulting to CPU (no CUDA specified by user and not set to CUDA in DB).')
         torch.set_default_device('cpu')
 
-
-    from core import main # Consider moving core import to top if it's safe / no circular deps
-    # Pass the potentially modified args.voice and args.speed
-    main(file_path=args.epub_file_path, voice=args.voice, pick_manually=args.pick, speed=args.speed, output_folder=args.output)
-
+    # Call main() with correct parameter names matching the function signature
+    main(
+        file_path=args.epub_file_path,
+        pick_manually=args.pick,
+        speed=args.speed,
+        output_folder=args.output,
+        voice_clone_sample=args.voice_sample
+    )
 
 if __name__ == '__main__':
     cli_main()

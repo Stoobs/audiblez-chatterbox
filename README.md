@@ -9,12 +9,13 @@
 
 ![Audiblez GUI on MacOSX](./imgs/mac.png)
 
-Audiblez generates `.m4b` audiobooks from regular `.epub` e-books,
-using Kokoro's high-quality speech synthesis.
 
-[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) is a recently published text-to-speech model with just 82M params and very natural sounding output.
-It's released under Apache licence and it was trained on < 100 hours of audio.
-It currently supports these languages: 🇺🇸 🇬🇧 🇪🇸 🇫🇷 🇮🇳 🇮🇹 🇯🇵 🇧🇷 🇨🇳
+Audiblez generates `.m4b` audiobooks from regular `.epub` e-books,
+using Chatterbox-TTS for high-quality speech synthesis.
+
+
+Chatterbox-TTS is a modern text-to-speech system supporting voice cloning and advanced model parameters for natural, expressive output.
+It currently supports a wide range of languages and voices.
 
 On a Google Colab's T4 GPU via Cuda, **it takes about 5 minutes to convert "Animal's Farm" by Orwell** (which is about 160,000 characters) to audiobook, at a rate of about 600 characters per second.
 
@@ -91,7 +92,7 @@ audiblez book.epub -v af_sky -s 1.5
 Use `-v` option to specify the voice to use. Available voices are listed here.
 The first letter is the language code and the second is the gender of the speaker e.g. `im_nicola` is an italian male voice.
 
-[For hearing samples of Kokoro-82M voices, go here](https://claudio.uk/posts/audiblez-v4.html)
+[For hearing samples of Chatterbox-TTS voices, go here](https://claudio.uk/posts/audiblez-v4.html)
 
 | Language                  | Voices                                                                                                                                                                                                                                     |
 |---------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -105,7 +106,7 @@ The first letter is the language code and the second is the gender of the speake
 | 🇧🇷 Brazilian Portuguese | `pf_dora`, `pm_alex`, `pm_santa`                                                                                                                                                                                                           |
 | 🇨🇳 Mandarin Chinese     | `zf_xiaobei`, `zf_xiaoni`, `zf_xiaoxiao`, `zf_xiaoyi`, `zm_yunjian`, `zm_yunxi`, `zm_yunxia`, `zm_yunyang`                                                                                                                                 |
 
-For more detaila about voice quality, check this document: [Kokoro-82M voices](https://huggingface.co/hexgrad/Kokoro-82M/blob/main/VOICES.md)
+For more details about voice quality, check this document: [Chatterbox-TTS voices](https://github.com/claudio-unreal/chatterbox-tts/blob/main/VOICES.md)
 
 ## How to run on GPU
 
@@ -113,7 +114,7 @@ By default, audiblez runs on CPU. If you pass the option `--cuda` it will try to
 
 Check out this example: [Audiblez running on a Google Colab Notebook with Cuda ](https://colab.research.google.com/drive/164PQLowogprWQpRjKk33e-8IORAvqXKI?usp=sharing]).
 
-We don't currently support Apple Silicon, as there is not yet a Kokoro implementation in MLX. As soon as it will be available, we will support it.
+We don't currently support Apple Silicon, as there is not yet a Chatterbox-TTS implementation in MLX. As soon as it will be available, we will support it.
 
 ## Manually pick chapters to convert
 

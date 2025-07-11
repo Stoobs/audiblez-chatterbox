@@ -1,35 +1,40 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# audiblez - A program to convert e-books into audiobooks using
-# Kokoro-82M model for high-quality text-to-speech synthesis.
-# by Claudio Santini 2025 - https://claudio.uk
-import os
-import traceback
-from glob import glob
+"""
+Audiblez - A program to convert e-books into audiobooks using
+Chatterbox-TTS models for high-quality text-to-speech synthesis.
+by Claudio Santini 2025 - https://claudio.uk
+"""
 
-import torch.cuda
-import spacy
-import ebooklib
-import soundfile
-import numpy as np
-import time
-import shutil
-import subprocess
+import os
 import platform
 import re
+import shutil
+import subprocess
+import time
+import traceback
+from glob import glob
 from io import StringIO
-from types import SimpleNamespace
-from tabulate import tabulate
 from pathlib import Path
 from string import Formatter
-from bs4 import BeautifulSoup
-from kokoro import KPipeline
-from ebooklib import epub
-from pick import pick
-import importlib.resources # Added for accessing package data files
-import markdown # Added for unmark function
+from types import SimpleNamespace
+from typing import Dict, List, Optional, Tuple, Any, Union, Callable
 
-from audiblez.database import load_user_setting # Added
+import numpy as np
+import soundfile
+import spacy
+import torch
+from bs4 import BeautifulSoup
+from chatterbox import ChatterboxTTS
+from ebooklib import epub
+import ebooklib
+import markdown
+from pick import pick
+from tabulate import tabulate
+import importlib.resources
+import xml.etree.ElementTree as ET
+
+from audiblez.database import load_user_setting
 
 sample_rate = 24000
 
@@ -38,6 +43,204 @@ def load_spacy():
     if not spacy.util.is_package("xx_ent_wiki_sm"):
         print("Downloading Spacy model xx_ent_wiki_sm...")
         spacy.cli.download("xx_ent_wiki_sm")
+
+def trim_silence(audio, threshold=0.01):
+    """
+    Trim silence from both ends of audio based on amplitude threshold.
+    
+    Args:
+        audio: Audio array (numpy or torch tensor)
+        threshold: Amplitude threshold below which audio is considered silence
+    
+    Returns:
+        Trimmed audio array
+    """
+    if hasattr(audio, 'cpu'):  # PyTorch tensor
+        audio_np = audio.squeeze().cpu().numpy()
+    else:  # numpy array
+        audio_np = audio.squeeze() if audio.ndim > 1 else audio
+    
+    # Find non-silent samples using RMS-based approach for better detection
+    # Use a sliding window to calculate RMS
+    window_size = int(0.02 * 24000)  # 20ms window at 24kHz
+    if len(audio_np) < window_size:
+        window_size = len(audio_np)
+    
+    # Calculate RMS energy in sliding windows
+    rms_values = []
+    for i in range(0, len(audio_np) - window_size + 1, window_size // 4):
+        window = audio_np[i:i + window_size]
+        rms = np.sqrt(np.mean(window ** 2))
+        rms_values.append(rms)
+    
+    # Convert to numpy array for easier processing
+    rms_values = np.array(rms_values)
+    
+    # Find first and last non-silent windows
+    non_silent_windows = np.where(rms_values > threshold)[0]
+    
+    if len(non_silent_windows) == 0:
+        # All audio is below threshold, return a very short segment
+        return audio_np[:int(len(audio_np) * 0.05)]
+    
+    # Calculate trim points based on non-silent windows
+    first_non_silent_window = non_silent_windows[0]
+    last_non_silent_window = non_silent_windows[-1]
+    
+    # Convert window indices back to sample indices
+    start_sample = max(0, first_non_silent_window * (window_size // 4) - int(0.05 * 24000))  # 50ms before
+    end_sample = min(len(audio_np), (last_non_silent_window + 1) * (window_size // 4) + int(0.05 * 24000))  # 50ms after
+    
+    # Ensure we don't trim too aggressively
+    if end_sample - start_sample < int(0.1 * 24000):  # Minimum 100ms
+        center = (start_sample + end_sample) // 2
+        start_sample = max(0, center - int(0.05 * 24000))
+        end_sample = min(len(audio_np), center + int(0.05 * 24000))
+    
+    return audio_np[start_sample:end_sample]
+
+def remove_excessive_pauses(audio, sample_rate=24000, max_pause_duration=3.0, silence_threshold=0.01):
+    """
+    Remove pauses longer than max_pause_duration seconds from audio.
+    
+    Args:
+        audio: Audio array (numpy or torch tensor)
+        sample_rate: Sample rate of the audio
+        max_pause_duration: Maximum allowed pause duration in seconds
+        silence_threshold: RMS threshold below which audio is considered silence
+    
+    Returns:
+        Audio array with excessive pauses removed
+    """
+    if hasattr(audio, 'cpu'):  # PyTorch tensor
+        audio_np = audio.squeeze().cpu().numpy()
+    else:  # numpy array
+        audio_np = audio.squeeze() if audio.ndim > 1 else audio
+    
+    if len(audio_np) == 0:
+        return audio_np
+    
+    # Use smaller window for more precise pause detection
+    window_size = int(0.01 * sample_rate)  # 10ms window
+    if len(audio_np) < window_size:
+        return audio_np
+    
+    # Calculate RMS for each window
+    rms_values = []
+    for i in range(0, len(audio_np) - window_size + 1, window_size // 2):
+        window = audio_np[i:i + window_size]
+        rms = np.sqrt(np.mean(window ** 2))
+        rms_values.append(rms)
+    
+    rms_values = np.array(rms_values)
+    
+    # Find silent and non-silent regions
+    is_silent = rms_values < silence_threshold
+    
+    # Find boundaries of silent regions
+    silent_regions = []
+    in_silence = False
+    silence_start = 0
+    
+    for i, silent in enumerate(is_silent):
+        if silent and not in_silence:
+            # Start of silence
+            silence_start = i
+            in_silence = True
+        elif not silent and in_silence:
+            # End of silence
+            silent_regions.append((silence_start, i))
+            in_silence = False
+    
+    # Handle case where audio ends in silence
+    if in_silence:
+        silent_regions.append((silence_start, len(is_silent)))
+    
+    # Convert window indices to sample indices and filter long pauses
+    max_pause_samples = int(max_pause_duration * sample_rate)
+    segments_to_keep = []
+    last_end = 0
+    
+    print(f"[Audio Processing] Found {len(silent_regions)} silent regions, checking for pauses > {max_pause_duration}s")
+    
+    for silence_start_idx, silence_end_idx in silent_regions:
+        # Convert to sample indices
+        silence_start_sample = silence_start_idx * (window_size // 2)
+        silence_end_sample = min(len(audio_np), silence_end_idx * (window_size // 2))
+        
+        pause_duration_samples = silence_end_sample - silence_start_sample
+        pause_duration_seconds = pause_duration_samples / sample_rate
+        
+        if pause_duration_samples > max_pause_samples:
+            print(f"[Audio Processing] Removing excessive pause: {pause_duration_seconds:.2f}s")
+            # Add the audio before this long pause
+            if silence_start_sample > last_end:
+                segments_to_keep.append(audio_np[last_end:silence_start_sample])
+            
+            # Replace long pause with shorter pause (0.5 seconds)
+            replacement_pause_samples = int(0.5 * sample_rate)
+            replacement_pause = np.zeros(replacement_pause_samples)
+            segments_to_keep.append(replacement_pause)
+            
+            last_end = silence_end_sample
+        else:
+            # Keep normal pause as is
+            continue
+    
+    # Add remaining audio after the last processed silence
+    if last_end < len(audio_np):
+        segments_to_keep.append(audio_np[last_end:])
+    
+    # If no long pauses were found, return original audio
+    if not segments_to_keep:
+        return audio_np
+    
+    # Concatenate all kept segments
+    result_audio = np.concatenate(segments_to_keep)
+    
+    original_duration = len(audio_np) / sample_rate
+    new_duration = len(result_audio) / sample_rate
+    time_saved = original_duration - new_duration
+    
+    if time_saved > 0.1:  # Only report if significant time was saved
+        print(f"[Audio Processing] Removed {time_saved:.2f}s of excessive pauses from chapter audio")
+    
+    return result_audio
+
+def concatenate_with_controlled_pauses(audio_segments, sample_rate, pause_duration=0.3):
+    """
+    Concatenate audio segments with controlled pauses between them.
+    
+    Args:
+        audio_segments: List of audio arrays
+        sample_rate: Sample rate of the audio
+        pause_duration: Duration of pause in seconds between segments
+    
+    Returns:
+        Concatenated audio array
+    """
+    if not audio_segments:
+        return np.array([])
+    
+    # Convert pause duration to samples
+    pause_samples = int(pause_duration * sample_rate)
+    pause_audio = np.zeros(pause_samples)
+    
+    result_segments = []
+    for i, segment in enumerate(audio_segments):
+        # Convert to numpy if needed
+        if hasattr(segment, 'cpu'):
+            segment_np = segment.squeeze().cpu().numpy()
+        else:
+            segment_np = segment.squeeze() if segment.ndim > 1 else segment
+        
+        result_segments.append(segment_np)
+        
+        # Add pause between segments (but not after the last one)
+        if i < len(audio_segments) - 1:
+            result_segments.append(pause_audio)
+    
+    return np.concatenate(result_segments)
 
 
 def set_espeak_library():
@@ -73,10 +276,12 @@ def set_espeak_library():
         print("On Linux: sudo apt install espeak-ng")
 
 
-def main(file_path, voice, pick_manually, speed, output_folder='.',
+def main(file_path, pick_manually, speed, output_folder='.',
          max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None,
          calibre_metadata: dict | None = None, calibre_cover_image_path: str | None = None,
-         m4b_assembly_method: str = 'original'):
+         m4b_assembly_method: str = 'original',
+         tts_model_config: dict = None,
+         voice_clone_sample: str = None):
     if post_event: post_event('CORE_STARTED')
     load_spacy()
     if output_folder != '.':
@@ -155,6 +360,7 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
 
     # Load custom rate from database and determine chars_per_sec for stats
     db_custom_rate = load_user_setting('custom_rate')
+    import torch 
     default_chars_per_sec = 500 if torch.cuda.is_available() else 50
     current_chars_per_sec = default_chars_per_sec
 
@@ -174,15 +380,141 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
     stats = SimpleNamespace(
         total_chars=sum(map(len, texts)),
         processed_chars=0,
-        chars_per_sec=current_chars_per_sec # Use the determined rate
+        chars_per_sec=current_chars_per_sec, # Use the determined rate
+        current_chapter=0,
+        total_chapters=len(selected_chapters),
+        completed_chapters=0,
+        current_task="Initializing",
+        progress=0,
+        eta="Calculating..."
     )
     print('Started at:', time.strftime('%H:%M:%S'))
     print(f'Total characters: {stats.total_chars:,}')
     print('Total words:', len(' '.join(texts).split()))
+    print(f'Total chapters: {stats.total_chapters}')
     eta = strfdelta((stats.total_chars - stats.processed_chars) / stats.chars_per_sec)
     print(f'Estimated time remaining (assuming {stats.chars_per_sec} chars/sec): {eta}')
-    set_espeak_library()
-    pipeline = KPipeline(lang_code=voice[0])  # a for american or b for british etc.
+    # ChatterboxTTS does not require espeak-ng
+    # Prepare TTS model config and voice cloning if provided
+    # Chatterbox-TTS: Use from_pretrained and .generate for each chapter
+    import torch
+    from chatterbox import ChatterboxTTS
+    model = ChatterboxTTS.from_pretrained('cuda' if torch.cuda.is_available() else 'cpu')
+    def synthesize_chapter(text, audio_prompt_path, tts_model_config, stats=None, post_event=None):
+        # Log input details for debugging
+        print(f"[TTS] Synthesizing chapter: text length={len(text)}, audio_prompt_path={audio_prompt_path}")
+        if not isinstance(text, str) or len(text.strip()) < 10:
+            print("[TTS] Skipping: text is empty or too short after filtering.")
+            return None
+        if audio_prompt_path:
+            if not Path(audio_prompt_path).exists():
+                print(f"[TTS] Warning: Reference audio file '{audio_prompt_path}' does not exist. Skipping chapter.")
+                return None
+            # # Validate audio file can be loaded and is correct format for Chatterbox
+            # try:
+            #     import soundfile as sf
+            #     info = sf.info(audio_prompt_path)
+            #     print(f"[TTS] Reference audio info: samplerate={info.samplerate}, channels={info.channels}, subtype={info.subtype}, frames={info.frames}")
+            #     if info.frames == 0:
+            #         print(f"[TTS] Warning: Reference audio '{audio_prompt_path}' is empty. Skipping chapter.")
+            #         return None
+            #     if info.samplerate != 24000:
+            #         print(f"[TTS] Warning: Reference audio '{audio_prompt_path}' must be 24kHz. Got {info.samplerate}. Skipping chapter.")
+            #         return None
+            #     if info.channels != 1:
+            #         print(f"[TTS] Warning: Reference audio '{audio_prompt_path}' must be mono. Got {info.channels} channels. Skipping chapter.")
+            #         return None
+            #     if info.subtype not in ('PCM_16', 'PCM_24', 'PCM_32'):
+            #         print(f"[TTS] Warning: Reference audio '{audio_prompt_path}' must be PCM 16/24/32-bit. Got {info.subtype}. Skipping chapter.")
+            #         return None
+            # except Exception as e:
+            #     print(f"[TTS] Warning: Could not load reference audio '{audio_prompt_path}': {e}. Skipping chapter.")
+            #     return None
+        # Print first 100 chars of text for debugging
+        print(f"[TTS] First 100 chars of text: {text[:100]!r}")
+        # Chunk text into sentences and synthesize in pieces to avoid model input length errors
+        import re
+        import numpy as np
+        try:
+            # Split text into sentences (improved regex for better sentence boundaries)
+            sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text.strip())
+            max_chars = 500  # Increased chunk size to reduce number of chunks and pauses
+            chunks = []
+            current = ''
+            for sent in sentences:
+                # Only split if adding this sentence would exceed max_chars AND current has content
+                if len(current) + len(sent) + 1 > max_chars and current.strip():
+                    chunks.append(current.strip())
+                    current = sent
+                else:
+                    current = (current + ' ' + sent).strip()
+            if current.strip():
+                chunks.append(current.strip())
+            
+            print(f"[TTS] Synthesizing {len(chunks)} chunks for chapter.")
+            audio_segments = []
+            processed_chunk_chars = 0
+            chapter_start_chars = stats.processed_chars if stats else 0
+            
+            for idx, chunk in enumerate(chunks):
+                if len(chunk.strip()) < 10:  # Skip very short chunks
+                    continue
+                
+                # Update current task for chunk-level progress
+                if stats:
+                    stats.current_task = f"Synthesizing Chapter {stats.current_chapter}: Chunk {idx+1}/{len(chunks)}"
+                    if post_event:
+                        post_event('CORE_PROGRESS', stats=stats)
+                
+                print(f"[TTS] Synthesizing chunk {idx+1}/{len(chunks)}: {chunk[:60]!r}...")
+                wav = model.generate(
+                    chunk,
+                    audio_prompt_path=audio_prompt_path,
+                    exaggeration=tts_model_config.get('exaggeration', 0.6),
+                    temperature=tts_model_config.get('temperature',0.8),
+                    cfg_weight=tts_model_config.get('cfg_weight', 0.7),
+                    min_p=tts_model_config.get('min_p', 0.05),
+                    top_p=tts_model_config.get('top_p', 0.95),
+                    repetition_penalty=tts_model_config.get('repetition_penalty', 1.0),
+                )
+                if wav is not None:
+                    # Trim excessive silence from the end of each chunk more aggressively
+                    trimmed_wav = trim_silence(wav, threshold=0.005)  # Lower threshold for more aggressive trimming
+                    audio_segments.append(trimmed_wav)
+                
+                # Update progress based on chunk completion
+                if stats:
+                    processed_chunk_chars += len(chunk)
+                    # Calculate progress based on chapters completed plus current chapter progress
+                    chapter_progress = processed_chunk_chars / len(text) if len(text) > 0 else 0
+                    total_progress = (stats.completed_chapters + chapter_progress) / stats.total_chapters if stats.total_chapters > 0 else 0
+                    stats.progress = min(100, int(total_progress * 100))  # Ensure progress never exceeds 100%
+                    
+                    # Calculate ETA based on chapters completed and current chapter progress
+                    chapters_remaining = stats.total_chapters - stats.completed_chapters - chapter_progress
+                    # Use a more conservative estimate based on average time per chapter
+                    if stats.completed_chapters > 0 or chapter_progress > 0.1:
+                        # Estimate average time per chapter based on processing speed
+                        avg_chars_per_chapter = stats.total_chars / stats.total_chapters if stats.total_chapters > 0 else 1000
+                        estimated_seconds_remaining = (chapters_remaining * avg_chars_per_chapter) / stats.chars_per_sec
+                        stats.eta = strfdelta(estimated_seconds_remaining)
+                    else:
+                        stats.eta = strfdelta((stats.total_chars - stats.processed_chars) / stats.chars_per_sec)
+                    
+                    if post_event:
+                        post_event('CORE_PROGRESS', stats=stats)
+            
+            if audio_segments:
+                # Concatenate audio segments with minimal pauses between chunks
+                return concatenate_with_controlled_pauses(audio_segments, model.sr, pause_duration=0.1)
+            else:
+                print("[TTS] Warning: No audio segments generated for this chapter.")
+                return None
+        except Exception as e:
+            print(f"[TTS] ERROR: Exception during chunked model.generate: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
     chapter_wav_files = []
     for i, chapter in enumerate(selected_chapters, start=1):
@@ -195,17 +527,22 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
             original_name = chapter.title
         else:
             original_name = f"chapter_{i}" # Fallback if neither is present
-
-        # Sanitize original_name for use in filename
-        # Replace common problematic characters, limit length
         safe_original_name = re.sub(r'[^\w\s-]', '', original_name) # Keep word chars, whitespace, hyphens
+        # Sanitize original_name for use in filename
+        # Remove apostrophes, replace spaces with underscores, and limit length
+        safe_original_name = re.sub(r"[']", '', original_name) # Remove apostrophes
+        safe_original_name = re.sub(r'[^\w\s-]', '', safe_original_name) # Keep word chars, whitespace, hyphens
         safe_original_name = re.sub(r'\s+', '_', safe_original_name).strip('_') # Replace whitespace with underscore
         safe_original_name = safe_original_name[:50] # Limit length to avoid overly long filenames
 
         # Determine output filename based on original input filename's stem
-        base_filename_stem = Path(filename).stem # e.g., "mybook" from "mybook.epub" or "mybook.mobi"
+        base_filename_stem = Path(filename).stem
+        # Remove apostrophes and replace spaces in base_filename_stem
+        safe_base_filename_stem = re.sub(r"[']", '', base_filename_stem)
+        safe_base_filename_stem = re.sub(r'\s+', '_', safe_base_filename_stem)
 
-        chapter_wav_path = Path(output_folder) / f'{base_filename_stem}_chapter_{i}_{voice}_{safe_original_name}.wav'
+        # Create filename without voice since Chatterbox doesn't use predefined voices
+        chapter_wav_path = Path(output_folder) / f'{safe_base_filename_stem}_chapter_{i}_{safe_original_name}.wav'
         chapter_wav_files.append(chapter_wav_path)
 
         # Apply filters before checking length or existence, so stats are based on filtered text length
@@ -226,8 +563,12 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
             print(f'File for chapter {i} already exists. Skipping')
             # Note: stats.processed_chars here will use original text length if we don't update 'text' var earlier
             stats.processed_chars += len(text) # Original text length for skip consistency
+            stats.completed_chapters += 1  # Count skipped chapters as completed
+            # Update progress based on completed chapters
+            stats.progress = min(100, int((stats.completed_chapters / stats.total_chapters) * 100)) if stats.total_chapters > 0 else 100
             if post_event:
                 post_event('CORE_CHAPTER_FINISHED', chapter_index=chapter.chapter_index)
+                post_event('CORE_PROGRESS', stats=stats)
             continue
 
         # Use filtered text for length check and processing
@@ -239,20 +580,80 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
             continue
 
         start_time = time.time()
-        if post_event: post_event('CORE_CHAPTER_STARTED', chapter_index=chapter.chapter_index)
-        audio_segments = gen_audio_segments(
-            pipeline, filtered_text, voice, speed, stats, post_event=post_event, max_sentences=max_sentences)
-        if audio_segments:
-            final_audio = np.concatenate(audio_segments)
-            soundfile.write(chapter_wav_path, final_audio, sample_rate)
-            end_time = time.time()
-            delta_seconds = end_time - start_time
-            chars_per_sec = len(text) / delta_seconds
-            print('Chapter written to', chapter_wav_path)
-            if post_event: post_event('CORE_CHAPTER_FINISHED', chapter_index=chapter.chapter_index)
-            print(f'Chapter {i} read in {delta_seconds:.2f} seconds ({chars_per_sec:.0f} characters per second)')
+        
+        # Update stats for current chapter
+        stats.current_chapter = i
+        stats.current_task = f"Synthesizing Chapter {i}: {original_name}"
+        # Calculate initial progress based on chapters completed
+        stats.progress = min(100, int((stats.completed_chapters / stats.total_chapters) * 100)) if stats.total_chapters > 0 else 0
+        
+        # Calculate ETA based on chapters remaining
+        chapters_remaining = stats.total_chapters - stats.completed_chapters
+        if chapters_remaining > 0:
+            avg_chars_per_chapter = stats.total_chars / stats.total_chapters if stats.total_chapters > 0 else 1000
+            estimated_seconds_remaining = (chapters_remaining * avg_chars_per_chapter) / stats.chars_per_sec
+            stats.eta = strfdelta(estimated_seconds_remaining)
         else:
-            print(f'Warning: No audio generated for chapter {i}')
+            stats.eta = "Complete"
+        
+        if post_event: 
+            post_event('CORE_CHAPTER_STARTED', chapter_index=chapter.chapter_index)
+            post_event('CORE_PROGRESS', stats=stats)
+        
+        # Synthesize audio using Chatterbox-TTS
+        wav = synthesize_chapter(
+            filtered_text,
+            voice_clone_sample,
+            tts_model_config or {},
+            stats,
+            post_event
+        )
+        if wav is not None:
+            try:
+                # Handle both PyTorch tensors and numpy arrays
+                if hasattr(wav, 'cpu'):  # PyTorch tensor
+                    audio_data = wav.squeeze(0).cpu().numpy()
+                else:  # numpy array
+                    audio_data = wav.squeeze(0) if wav.ndim > 1 else wav
+                
+                # Remove excessive pauses before writing the final wav file
+                audio_data = remove_excessive_pauses(audio_data, model.sr, max_pause_duration=3.0)
+                
+                soundfile.write(chapter_wav_path, audio_data, model.sr)
+                end_time = time.time()
+                delta_seconds = end_time - start_time
+                chars_per_sec = len(text) / delta_seconds
+                
+                # Update final progress for this chapter
+                stats.processed_chars += len(text)
+                stats.completed_chapters += 1
+                # Calculate progress based on completed chapters (more accurate)
+                stats.progress = min(100, int((stats.completed_chapters / stats.total_chapters) * 100)) if stats.total_chapters > 0 else 100
+                
+                # Calculate ETA based on chapters remaining
+                chapters_remaining = stats.total_chapters - stats.completed_chapters
+                if chapters_remaining > 0 and stats.completed_chapters > 0:
+                    # Estimate time per chapter based on completed work
+                    avg_chars_per_chapter = stats.total_chars / stats.total_chapters if stats.total_chapters > 0 else 1000
+                    estimated_seconds_remaining = (chapters_remaining * avg_chars_per_chapter) / stats.chars_per_sec
+                    stats.eta = strfdelta(estimated_seconds_remaining)
+                else:
+                    stats.eta = "Complete" if chapters_remaining == 0 else "Calculating..."
+                
+                stats.current_task = f"Completed Chapter {i}: {original_name}"
+                
+                print('Chapter written to', chapter_wav_path)
+                if post_event: 
+                    post_event('CORE_CHAPTER_FINISHED', chapter_index=chapter.chapter_index)
+                    post_event('CORE_PROGRESS', stats=stats)
+                print(f'Chapter {i} read in {delta_seconds:.2f} seconds ({chars_per_sec:.0f} characters per second)')
+            except Exception as e:
+                print(f'[TTS] ERROR: Failed to write audio for chapter {i}: {e}')
+                import traceback
+                traceback.print_exc()
+                chapter_wav_files.remove(chapter_wav_path)
+        else:
+            print(f'[TTS] Warning: No audio generated for chapter {i} (skipped or error)')
             chapter_wav_files.remove(chapter_wav_path)
 
     if has_ffmpeg:
@@ -295,7 +696,7 @@ def print_selected_chapters(document_chapters, chapters):
     ], headers=['#', 'Chapter', 'Text Length', 'Selected', 'First words']))
 
 
-def gen_audio_segments(pipeline, text, voice, speed, stats=None, max_sentences=None, post_event=None):
+def gen_audio_segments(pipeline, text, speed, stats=None, max_sentences=None, post_event=None):
     nlp = spacy.load('xx_ent_wiki_sm')
     nlp.add_pipe('sentencizer')
     audio_segments = []
@@ -303,11 +704,11 @@ def gen_audio_segments(pipeline, text, voice, speed, stats=None, max_sentences=N
     sentences = list(doc.sents)
     for i, sent in enumerate(sentences):
         if max_sentences and i > max_sentences: break
-        for gs, ps, audio in pipeline(sent.text, voice=voice, speed=speed, split_pattern=r'\n\n\n'):
-            audio_segments.append(audio)
+        # ChatterboxTTS: generate audio for each sentence
+        audio = pipeline.generate(sent.text)
+        audio_segments.append(audio)
         if stats:
             stats.processed_chars += len(sent.text)
-            # Use floating point division for more accurate progress percentage
             if stats.total_chars > 0:
                 stats.progress = int((stats.processed_chars / stats.total_chars) * 100)
             else:
@@ -319,11 +720,10 @@ def gen_audio_segments(pipeline, text, voice, speed, stats=None, max_sentences=N
     return audio_segments
 
 
-def gen_text(text, voice='af_heart', output_file='text.wav', speed=1, play=False):
-    lang_code = voice[:1]
-    pipeline = KPipeline(lang_code=lang_code)
+def gen_text(text, output_file='text.wav', speed=1, play=False):
+    pipeline = ChatterboxTTS.from_pretrained('cuda' if torch.cuda.is_available() else 'cpu')
     load_spacy()
-    audio_segments = gen_audio_segments(pipeline, text, voice=voice, speed=speed);
+    audio_segments = gen_audio_segments(pipeline, text, speed)
     final_audio = np.concatenate(audio_segments)
     soundfile.write(output_file, final_audio, sample_rate)
     if play:
@@ -402,61 +802,25 @@ def strfdelta(tdelta, fmt='{D:02}d {H:02}h {M:02}m {S:02}s'):
 
 
 def concat_wavs_with_ffmpeg(chapter_files, output_folder, filename):
-    wav_list_txt = Path(output_folder) / filename.replace('.epub', '_wav_list.txt')
+    # Sanitize temp file names for Windows: remove apostrophes, replace spaces with underscores
+    safe_filename = filename.replace("'", "").replace(' ', '_')
+    wav_list_txt = Path(output_folder) / safe_filename.replace('.epub', '_wav_list.txt')
     with open(wav_list_txt, 'w') as f:
         for wav_file in chapter_files:
-            f.write(f"file '{wav_file}'\n")
-    concat_file_path = Path(output_folder) / filename.replace('.epub', '.tmp.mp4')
-    subprocess.run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', wav_list_txt, '-c', 'copy', concat_file_path])
+            # Remove apostrophes and replace spaces in file paths as well
+            safe_wav_file = str(wav_file).replace("'", "").replace(' ', '_')
+            f.write(f"file '{safe_wav_file}'\n")
+    concat_file_path = Path(output_folder) / safe_filename.replace('.epub', '.tmp.wav')
+    # Use PCM for intermediate concat, but output as .wav, not .mp4
+    subprocess.run([
+        'ffmpeg', '-y', '-f', 'concat', '-safe', '0',
+        '-i', str(wav_list_txt),
+        '-c', 'copy', str(concat_file_path)
+    ])
     Path(wav_list_txt).unlink()
     return concat_file_path
 
 
-def concat_wavs_with_ffmpeg_crispy(chapter_files: list[Path], output_folder: str, temp_concat_filename: str) -> Path:
-    """
-    Concatenates WAV files into a single temporary WAV file using relative paths.
-    This is the 'Extra Crispy' method, designed to be more robust on Windows.
-    """
-    output_path = Path(output_folder)
-    wav_list_filename = "crispy_wav_list.txt"
-    wav_list_path = output_path / wav_list_filename
-    temp_concat_wav_path = output_path / temp_concat_filename
-
-    try:
-        with open(wav_list_path, 'w', encoding='utf-8') as f:
-            for wav_file_abs in chapter_files:
-                # Use relative paths in the list file
-                wav_file_relative = wav_file_abs.relative_to(output_path)
-                f.write(f"file '{wav_file_relative.as_posix()}'\n")
-
-        command = [
-            'ffmpeg', '-y', '-f', 'concat', '-safe', '0',
-            '-i', wav_list_filename,
-            '-c', 'copy', temp_concat_filename
-        ]
-
-        print(f"Executing 'Extra Crispy' WAV concatenation in '{output_folder}': {' '.join(command)}")
-        # Execute ffmpeg with cwd=output_folder to use relative paths
-        proc = subprocess.run(command, cwd=output_folder, capture_output=True, text=True, check=True)
-        print("Concatenation successful.")
-
-    except subprocess.CalledProcessError as e:
-        print(f"ERROR: 'Extra Crispy' WAV concatenation failed with exit code {e.returncode}.")
-        print(f"ffmpeg stdout:\n{e.stdout}")
-        print(f"ffmpeg stderr:\n{e.stderr}")
-        raise  # Re-raise the exception to be caught by create_m4b
-    except Exception as e:
-        print(f"An unexpected error occurred during 'Extra Crispy' concatenation: {e}")
-        raise
-    finally:
-        # Clean up the list file
-        if wav_list_path.exists():
-            try:
-                wav_list_path.unlink()
-            except OSError as e:
-                print(f"Warning: Could not delete temp list file '{wav_list_path}': {e}")
-
-    return temp_concat_wav_path
 
 
 def create_m4b(chapter_files: list[str], original_input_filename: str, cover_image: bytes | None, output_folder: str, assembly_method: str = 'original'):
@@ -468,14 +832,10 @@ def create_m4b(chapter_files: list[str], original_input_filename: str, cover_ima
     temp_m4b_filepath = None
     temp_cover_file_path = None
 
+
     try:
-        if assembly_method == 'crispy':
-            print("Using 'Extra Crispy' M4B assembly method.")
-            chapter_paths = [Path(f) for f in chapter_files]
-            concat_file_path = concat_wavs_with_ffmpeg_crispy(chapter_paths, output_folder, "temp_concat.wav")
-        else:
-            print("Using 'Original' M4B assembly method.")
-            concat_file_path = concat_wavs_with_ffmpeg(chapter_files, output_folder, original_input_filename)
+        print("Using M4B assembly method.")
+        concat_file_path = concat_wavs_with_ffmpeg(chapter_files, output_folder, original_input_filename)
 
         if not concat_file_path or not concat_file_path.exists():
             raise RuntimeError(f"Concatenated audio file was not created: {concat_file_path}")
@@ -516,6 +876,7 @@ def create_m4b(chapter_files: list[str], original_input_filename: str, cover_ima
                 '-c:v', 'mjpeg',
             ])
 
+        # Use AAC audio codec for m4b (not pcm)
         ffmpeg_command.extend([
             '-c:a', 'aac', '-b:a', '64k', '-f', 'mp4',
             str(temp_m4b_filepath.relative_to(output_path).as_posix())
@@ -530,6 +891,22 @@ def create_m4b(chapter_files: list[str], original_input_filename: str, cover_ima
             temp_m4b_filepath.rename(final_filename)
             print(f"'{final_filename}' created successfully. Enjoy your audiobook.")
             print("Feel free to delete the intermediary .wav chapter files; the .m4b is all you need.")
+            # Clean up all chapter wav files after successful m4b creation
+            for wav_file in chapter_files:
+                try:
+                    wav_path = Path(wav_file)
+                    if wav_path.exists():
+                        wav_path.unlink()
+                        print(f"Deleted temporary chapter wav file: {wav_path}")
+                except Exception as e:
+                    print(f"Warning: Could not delete chapter wav file '{wav_file}': {e}")
+            # Clean up chapters.txt after successful m4b creation
+            try:
+                if chapters_txt_path.exists():
+                    chapters_txt_path.unlink()
+                    print(f"Deleted temporary chapters.txt file: {chapters_txt_path}")
+            except Exception as e:
+                print(f"Warning: Could not delete chapters.txt file '{chapters_txt_path}': {e}")
         else:
             raise RuntimeError(f"ffmpeg seemed to succeed but the output file '{temp_m4b_filepath}' was not found.")
 
@@ -1225,4 +1602,3 @@ def extract_chapters_and_metadata_from_calibre_html(html_file_path: str, opf_fil
         print(f"ERROR: Failed to parse or extract chapters from HTML file '{html_file_path}': {e}")
         traceback.print_exc()
         return [], metadata # Return empty chapters list and current metadata
-

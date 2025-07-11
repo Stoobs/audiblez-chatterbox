@@ -125,7 +125,7 @@
 **4. Test Environment:**
    *   Application: Audiblez (current development version with queue feature)
    *   Operating System: (Specify OS if tests are platform-dependent, e.g., Windows, macOS, Linux)
-   *   Dependencies: Python, wxPython, PyTorch, Kokoro, Spacy, Ebooklib, etc., as required by Audiblez.
+   *   Dependencies: Python, wxPython, PyTorch, Chatterbox-TTS, Spacy, Ebooklib, etc., as required by Audiblez.
    *   Sample EPUB files (varied content, some simple, some complex if possible).
 
 **5. Test Data:**

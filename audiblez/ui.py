@@ -25,8 +25,18 @@ from pathlib import Path
 import audiblez.database as db  # Changed import for clarity
 import json  # For settings
 
-from audiblez.voices import voices, flags
 # from audiblez.database import load_all_user_settings, save_user_setting # Now use db. prefix
+
+# Windows-specific imports for dark mode support
+if platform.system() == 'Windows':
+    try:
+        import ctypes
+        from ctypes import wintypes
+        WINDOWS_DARK_MODE_AVAILABLE = True
+    except ImportError:
+        WINDOWS_DARK_MODE_AVAILABLE = False
+else:
+    WINDOWS_DARK_MODE_AVAILABLE = False
 
 # Theme definitions
 palettes = {
@@ -38,11 +48,11 @@ palettes = {
         "border": wx.Colour(200, 200, 200),
         "highlight": wx.Colour(0, 120, 215),
         "highlight_text": wx.Colour(255, 255, 255),
-        "button_face": None, # wx.SystemSettings.GetColour(wx.SYS_COLOUR_BTNFACE),
-        "button_text": None, # wx.SystemSettings.GetColour(wx.SYS_COLOUR_BTNTEXT),
+        "button_face": wx.Colour(225, 225, 225),
+        "button_text": wx.Colour(0, 0, 0),
         "list_even": wx.Colour(255, 255, 255),
         "list_odd": wx.Colour(245, 245, 245),
-        "list_header": None, # wx.SystemSettings.GetColour(wx.SYS_COLOUR_BTNFACE),
+        "list_header": wx.Colour(220, 220, 220),
     },
     "dark": {
         "background": wx.Colour(45, 45, 48),
@@ -59,6 +69,228 @@ palettes = {
         "list_header": wx.Colour(80, 80, 83),
     }
 }
+theme = palettes['light'] # Global theme variable
+
+# Windows dark mode support functions
+def set_windows_dark_mode(hwnd, enable_dark_mode):
+    """Enable or disable dark mode for a Windows window handle"""
+    if not WINDOWS_DARK_MODE_AVAILABLE:
+        return False
+    
+    try:
+        # Windows 10 version 1903 and later
+        DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+        value = ctypes.c_int(1 if enable_dark_mode else 0)
+        
+        # Try to set dark mode attribute
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, 
+            ctypes.byref(value), ctypes.sizeof(value)
+        )
+        return True
+    except:
+        return False
+
+def apply_windows_dark_mode_to_window(window, enable_dark_mode):
+    """Apply Windows dark mode to a wxPython window"""
+    if not WINDOWS_DARK_MODE_AVAILABLE or not hasattr(window, 'GetHandle'):
+        return False
+    
+    try:
+        hwnd = window.GetHandle()
+        return set_windows_dark_mode(hwnd, enable_dark_mode)
+    except:
+        return False
+
+# Custom themed dialog classes
+class ThemedMessageDialog(wx.Dialog):
+    """Custom themed message dialog to replace wx.MessageBox"""
+    
+    def __init__(self, parent, message, caption="Message", style=wx.OK):
+        super().__init__(parent, title=caption, size=(400, 200))
+        self.SetMinSize((300, 150))
+        
+        # Main panel
+        panel = wx.Panel(self)
+        main_sizer = wx.BoxSizer(wx.VERTICAL)
+        
+        # Icon and message area
+        content_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        
+        # Add icon based on style
+        if style & wx.ICON_ERROR:
+            icon = wx.ArtProvider.GetBitmap(wx.ART_ERROR, wx.ART_MESSAGE_BOX)
+        elif style & wx.ICON_WARNING:
+            icon = wx.ArtProvider.GetBitmap(wx.ART_WARNING, wx.ART_MESSAGE_BOX)
+        elif style & wx.ICON_INFORMATION:
+            icon = wx.ArtProvider.GetBitmap(wx.ART_INFORMATION, wx.ART_MESSAGE_BOX)
+        elif style & wx.ICON_QUESTION:
+            icon = wx.ArtProvider.GetBitmap(wx.ART_QUESTION, wx.ART_MESSAGE_BOX)
+        else:
+            icon = None
+        
+        if icon:
+            icon_ctrl = wx.StaticBitmap(panel, bitmap=icon)
+            content_sizer.Add(icon_ctrl, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 10)
+        
+        # Message text
+        msg_text = wx.StaticText(panel, label=message)
+        msg_text.Wrap(350)
+        content_sizer.Add(msg_text, 1, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 10)
+        
+        main_sizer.Add(content_sizer, 1, wx.EXPAND | wx.ALL, 10)
+        
+        # Button area
+        button_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        
+        if style & wx.YES_NO:
+            yes_btn = wx.Button(panel, wx.ID_YES, "Yes")
+            no_btn = wx.Button(panel, wx.ID_NO, "No")
+            button_sizer.Add(yes_btn, 0, wx.ALL, 5)
+            button_sizer.Add(no_btn, 0, wx.ALL, 5)
+            yes_btn.SetDefault()
+        elif style & wx.OK_CANCEL:
+            ok_btn = wx.Button(panel, wx.ID_OK, "OK")
+            cancel_btn = wx.Button(panel, wx.ID_CANCEL, "Cancel")
+            button_sizer.Add(ok_btn, 0, wx.ALL, 5)
+            button_sizer.Add(cancel_btn, 0, wx.ALL, 5)
+            ok_btn.SetDefault()
+        else:
+            ok_btn = wx.Button(panel, wx.ID_OK, "OK")
+            button_sizer.Add(ok_btn, 0, wx.ALL, 5)
+            ok_btn.SetDefault()
+        
+        main_sizer.Add(button_sizer, 0, wx.ALIGN_CENTER | wx.ALL, 10)
+        
+        panel.SetSizer(main_sizer)
+        
+        # Apply theme
+        self.apply_theme()
+        
+        # Center on parent
+        self.CenterOnParent()
+        
+        # Apply Windows dark mode if available
+        if theme == palettes['dark']:
+            apply_windows_dark_mode_to_window(self, True)
+    
+    def apply_theme(self):
+        """Apply the current theme to this dialog"""
+        self.SetBackgroundColour(theme['background'])
+        
+        def theme_children(widget):
+            if hasattr(widget, 'GetChildren'):
+                for child in widget.GetChildren():
+                    if isinstance(child, wx.Panel):
+                        child.SetBackgroundColour(theme['background'])
+                    elif isinstance(child, wx.StaticText):
+                        child.SetForegroundColour(theme['text'])
+                        child.SetBackgroundColour(theme['background'])
+                    elif isinstance(child, wx.Button):
+                        child.SetBackgroundColour(theme['button_face'])
+                        child.SetForegroundColour(theme['button_text'])
+                    
+                    theme_children(child)
+        
+        theme_children(self)
+        self.Refresh()
+
+def show_themed_message(parent, message, caption="Message", style=wx.OK):
+    """Show a themed message dialog"""
+    dialog = ThemedMessageDialog(parent, message, caption, style)
+    result = dialog.ShowModal()
+    dialog.Destroy()
+    return result
+
+class ThemedFileDialog(wx.Dialog):
+    """Custom themed file dialog - simplified version"""
+    
+    def __init__(self, parent, message="Choose a file", defaultDir="", 
+                 defaultFile="", wildcard="*.*", style=wx.FD_OPEN):
+        super().__init__(parent, title=message, size=(600, 400))
+        
+        self.selected_path = None
+        self.file_style = style
+        
+        # Create native file dialog but try to theme it
+        self.native_dialog = wx.FileDialog(
+            self, message=message, defaultDir=defaultDir,
+            defaultFile=defaultFile, wildcard=wildcard, style=style
+        )
+        
+        # Apply Windows dark mode if available
+        if theme == palettes['dark']:
+            apply_windows_dark_mode_to_window(self.native_dialog, True)
+        
+    def ShowModal(self):
+        """Show the native file dialog with theming applied"""
+        return self.native_dialog.ShowModal()
+        
+    def GetPath(self):
+        """Get the selected file path"""
+        return self.native_dialog.GetPath()
+        
+    def GetPaths(self):
+        """Get multiple selected file paths"""
+        return self.native_dialog.GetPaths()
+        
+    def Destroy(self):
+        """Clean up resources"""
+        self.native_dialog.Destroy()
+        super().Destroy()
+
+def show_themed_dir_dialog(parent, message="Choose a directory", defaultPath="", style=wx.DD_DEFAULT_STYLE):
+    """Show a themed directory dialog"""
+    dialog = wx.DirDialog(parent, message, defaultPath, style)
+    
+    # Apply Windows dark mode if available
+    if theme == palettes['dark']:
+        apply_windows_dark_mode_to_window(dialog, True)
+    
+    result = dialog.ShowModal()
+    path = dialog.GetPath() if result == wx.ID_OK else None
+    dialog.Destroy()
+    return result, path
+
+def show_themed_file_dialog(parent, message="Choose a file", defaultDir="", 
+                           defaultFile="", wildcard="*.*", style=wx.FD_OPEN):
+    """Show a themed file dialog"""
+    dialog = ThemedFileDialog(parent, message, defaultDir, defaultFile, wildcard, style)
+    result = dialog.ShowModal()
+    path = dialog.GetPath() if result == wx.ID_OK else None
+    dialog.Destroy()
+    return result, path
+
+# Enhanced theme palettes with comprehensive color definitions
+palettes = {
+    'light': {
+        "background": wx.Colour(255, 255, 255),
+        "text": wx.Colour(0, 0, 0),
+        "panel": wx.Colour(240, 240, 240),
+        "border": wx.Colour(200, 200, 200),
+        "highlight": wx.Colour(0, 120, 215),
+        "highlight_text": wx.Colour(255, 255, 255),
+        "button_face": wx.Colour(230, 230, 230),
+        "button_text": wx.Colour(0, 0, 0),
+        "list_even": wx.Colour(255, 255, 255),
+        "list_odd": wx.Colour(248, 248, 248),
+        "list_header": wx.Colour(220, 220, 220),
+    },
+    'dark': {
+        "background": wx.Colour(32, 32, 32),
+        "text": wx.Colour(255, 255, 255),
+        "panel": wx.Colour(60, 60, 63),
+        "border": wx.Colour(90, 90, 90),
+        "highlight": wx.Colour(90, 156, 248),
+        "highlight_text": wx.Colour(255, 255, 255),
+        "button_face": wx.Colour(75, 75, 78),
+        "button_text": wx.Colour(230, 230, 230),
+        "list_even": wx.Colour(60, 60, 63),
+        "list_odd": wx.Colour(70, 70, 73),
+        "list_header": wx.Colour(80, 80, 83),
+    }
+}
+
 theme = palettes['light'] # Global theme variable
 
 EVENTS = {
@@ -150,6 +382,32 @@ class ListBoxComboPopup(wx.ComboPopup):
 
 
 class MainWindow(wx.Frame):
+    def _load_epub_file(self, file_path):
+        """Helper function to load and process an EPUB file."""
+        print(f"Opening file: {file_path}")
+        from ebooklib import epub
+        from audiblez.core import find_document_chapters_and_extract_texts, find_cover
+        from pathlib import Path
+        try:
+            book = epub.read_epub(file_path)
+            meta_title = book.get_metadata('DC', 'title')
+            title = meta_title[0][0] if meta_title else Path(file_path).stem
+            meta_creator = book.get_metadata('DC', 'creator')
+            author = meta_creator[0][0] if meta_creator else 'Unknown Author'
+            document_chapters = find_document_chapters_and_extract_texts(book)
+            cover = find_cover(book)
+            cover_info = {'type': 'epub_cover', 'content': cover.content} if cover else None
+            wx.CallAfter(self._load_book_data_into_ui,
+                book_title=title,
+                book_author=author,
+                document_chapters=document_chapters,
+                source_path=file_path,
+                book_object=book,
+                cover_info=cover_info
+            )
+        except Exception as e:
+            print(f"Error opening EPUB file {file_path}: {e}")
+            show_themed_message(self, f"Failed to open or parse the EPUB file:\n\n{e}", "EPUB Error", wx.OK | wx.ICON_ERROR)
     def __init__(self, parent, title):
         screen_width, screen_h = wx.GetDisplaySize()
         self.window_width = int(screen_width * 0.6)
@@ -186,9 +444,12 @@ class MainWindow(wx.Frame):
 
         self.Bind(wx.EVT_SIZE, self.on_resize)
 
-        # Apply theme on startup
-        self.theme_name = self.user_settings.get('dark_mode', 'light')
-        self.apply_theme(self.theme_name)
+        # Apply theme on startup - defer until after UI is fully created
+        saved_theme = self.user_settings.get('dark_mode', 'light')
+        self.theme_name = saved_theme
+        
+        # Store the theme to apply later
+        self._pending_theme = saved_theme
 
         # Initialize core attributes that will be set by UI controls,
         # potentially using loaded settings or defaults.
@@ -213,6 +474,9 @@ class MainWindow(wx.Frame):
         # Ensure notebook and tabs are created, then refresh them.
         self.create_notebook_and_tabs()
         self._create_static_panels() # Create the right-hand side panels
+        
+        # Apply theme after UI is fully constructed
+        wx.CallAfter(self._apply_initial_theme)
         wx.CallAfter(self._initial_ui_refresh) # Refresh tabs after UI is fully up
 
         # Initialize and start schedule checker
@@ -238,6 +502,16 @@ class MainWindow(wx.Frame):
         # Add any other cleanup needed before closing
         self.Destroy() # Proceed with closing
 
+
+    def _apply_initial_theme(self):
+        """Apply the saved theme after UI is fully constructed"""
+        if hasattr(self, '_pending_theme'):
+            # Update dark mode toggle to match saved setting
+            if hasattr(self, 'dark_mode_toggle'):
+                self.dark_mode_toggle.SetValue(self._pending_theme == 'dark')
+            
+            # Apply the theme
+            self.apply_theme(self._pending_theme)
 
     def _initial_ui_refresh(self):
         if not hasattr(self, 'notebook'):
@@ -324,6 +598,10 @@ class MainWindow(wx.Frame):
 
         menubar.Append(file_menu, "&File")
         self.SetMenuBar(menubar)
+        
+        # Store reference for theming
+        self.menubar = menubar
+        self.file_menu = file_menu
 
     def on_core_started(self, event):
         print('CORE_STARTED')
@@ -393,7 +671,7 @@ class MainWindow(wx.Frame):
             self.process_next_queue_item() # This method will handle actual processing
         else:
             # This was a single synthesis, not from queue
-            self.open_folder_with_explorer(self.output_folder_text_ctrl.GetValue())
+            # self.open_folder_with_explorer(self.output_folder_text_ctrl.GetValue())
             # Re-enable start button and params if it was a single synthesis
             self.start_button.Enable()
             self.params_panel.Enable()
@@ -490,10 +768,21 @@ class MainWindow(wx.Frame):
         self.text_area.SetFont(font)
         self.text_area.Bind(wx.EVT_TEXT, lambda event: setattr(self.selected_chapter, 'extracted_text', self.text_area.GetValue()) if self.selected_chapter else None)
         self.chapter_label = wx.StaticText(self.center_panel, label="No chapter selected.")
+        
+        # Create a horizontal sizer for buttons
+        button_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        
         preview_button = wx.Button(self.center_panel, label="🔊 Preview")
         preview_button.Bind(wx.EVT_BUTTON, self.on_preview_chapter)
+        button_sizer.Add(preview_button, 0, wx.ALL, 5)
+        
+        tidy_button = wx.Button(self.center_panel, label="🧹 Tidy Text")
+        tidy_button.Bind(wx.EVT_BUTTON, self.on_tidy_text)
+        tidy_button.SetToolTip("Clean up excessive line breaks and improve text formatting")
+        button_sizer.Add(tidy_button, 0, wx.ALL, 5)
+        
         self.center_sizer.Add(self.chapter_label, 0, wx.ALL, 5)
-        self.center_sizer.Add(preview_button, 0, wx.ALL, 5)
+        self.center_sizer.Add(button_sizer, 0, wx.ALL, 5)
         self.center_sizer.Add(self.text_area, 1, wx.ALL | wx.EXPAND, 5)
 
         # Create Right Panel (for details, params, synth)
@@ -517,6 +806,12 @@ class MainWindow(wx.Frame):
         theme = palettes[theme_name]
         self.theme_name = theme_name
 
+        # Apply Windows dark mode if available
+        if theme_name == 'dark':
+            apply_windows_dark_mode_to_window(self, True)
+        else:
+            apply_windows_dark_mode_to_window(self, False)
+
         # Update the toggle state without firing event
         is_dark = (theme_name == 'dark')
         if hasattr(self, 'dark_mode_toggle'):
@@ -525,86 +820,108 @@ class MainWindow(wx.Frame):
             self.dark_mode_toggle.SetValue(is_dark)
             self.dark_mode_toggle.Bind(wx.EVT_CHECKBOX, self.on_toggle_dark_mode)
 
-        # --- Helper function to style a list control ---
-        def style_list_ctrl(list_ctrl):
-            if not list_ctrl: return
-            list_ctrl.SetBackgroundColour(theme['panel'])
-            # ULC does not have SetAlternateRowColour, so we do it manually.
-            for i in range(list_ctrl.GetItemCount()):
-                if i % 2 == 0:
-                    list_ctrl.SetItemBackgroundColour(i, theme['list_even'])
-                else:
-                    list_ctrl.SetItemBackgroundColour(i, theme['list_odd'])
-                list_ctrl.SetItemTextColour(i, theme['text'])
-
-            # Header styling is not supported by ULC in this manner.
-            # The previous attempts to style the header caused crashes.
-            # We will leave the header with its default appearance.
-
-        # --- Recursive function to apply theme to generic controls ---
+        # --- Enhanced recursive function to apply theme to all controls ---
         def apply_to_children(parent_widget):
-            if not hasattr(parent_widget, 'GetChildren'): return
+            if not hasattr(parent_widget, 'GetChildren'): 
+                return
+                
             for child in parent_widget.GetChildren():
-                if not child: continue
+                if not child: 
+                    continue
 
-                if isinstance(child, (wx.Panel, ScrolledPanel, wx.Dialog)):
+                try:
+                    # Force refresh on all widgets
                     child.SetBackgroundColour(theme['background'])
                     child.SetForegroundColour(theme['text'])
-                    apply_to_children(child) # Recurse
-                elif isinstance(child, wx.StaticText):
-                    child.SetForegroundColour(theme['text'])
-                elif isinstance(child, (wx.Button, wx.ToggleButton)):
-                    child.SetBackgroundColour(theme['button_face'])
-                    child.SetForegroundColour(theme['button_text'])
-                elif isinstance(child, wx.TextCtrl):
-                    child.SetBackgroundColour(theme['panel'])
-                    child.SetForegroundColour(theme['text'])
-                elif isinstance(child, GenCheckBox):
-                    child.SetBackgroundColour(theme['background'])
-                    child.SetForegroundColour(theme['text'])
-                elif isinstance(child, wx.ComboCtrl):
-                    # Force light theme for ComboCtrl and its popup to ensure readability in all modes,
-                    # as native listbox text color can be problematic.
-                    light_palette = palettes['light']
-                    child.SetBackgroundColour(light_palette['panel'])
-                    child.SetForegroundColour(light_palette['text'])
-                    if child.GetPopupControl() and hasattr(child.GetPopupControl(), 'GetControl'):
-                        popup_listbox = child.GetPopupControl().GetControl()
-                        if popup_listbox:
-                            popup_listbox.SetBackgroundColour(light_palette['panel'])
-                            popup_listbox.SetForegroundColour(light_palette['text'])
+                    
+                    # Specific widget handling
+                    if isinstance(child, wx.StaticText):
+                        child.SetForegroundColour(theme['text'])
+                        child.SetBackgroundColour(theme['background'])
+                    
+                    elif isinstance(child, (wx.Button, wx.ToggleButton)):
+                        child.SetBackgroundColour(theme['button_face'])
+                        child.SetForegroundColour(theme['button_text'])
+                    
+                    elif isinstance(child, wx.TextCtrl):
+                        child.SetBackgroundColour(theme['panel'])
+                        child.SetForegroundColour(theme['text'])
+                    
+                    elif isinstance(child, GenCheckBox):
+                        child.SetBackgroundColour(theme['background'])
+                        child.SetForegroundColour(theme['text'])
+                    
+                    elif isinstance(child, (wx.SpinCtrl, wx.SpinCtrlDouble)):
+                        child.SetBackgroundColour(theme['panel'])
+                        child.SetForegroundColour(theme['text'])
+                    
+                    elif isinstance(child, (wx.Panel, ScrolledPanel)):
+                        child.SetBackgroundColour(theme['background'])
+                        child.SetForegroundColour(theme['text'])
+                    
+                    elif hasattr(child, 'SetTabAreaColour'):  # FlatNotebook
+                        child.SetBackgroundColour(theme['background'])
+                        child.SetTabAreaColour(theme['panel'])
+                        child.SetActiveTabColour(theme['highlight'])
+                        child.SetNonActiveTabTextColour(theme['text'])
+                        child.SetActiveTabTextColour(theme['highlight_text'])
+                    
+                    # Force refresh the widget
+                    child.Refresh()
+                    
+                    # Recurse to children
+                    apply_to_children(child)
+                        
+                except Exception as e:
+                    # Continue if theming fails for a specific control
+                    print(f"Theme error on {type(child).__name__}: {e}")
 
         # --- Main Theme Application ---
+        # Set the main window colors first
         self.SetBackgroundColour(theme['background'])
         self.SetForegroundColour(theme['text'])
+        
+        # Apply to all children recursively
         apply_to_children(self)
 
         # --- Style Specific Complex Widgets ---
         if hasattr(self, 'notebook') and self.notebook:
             self.notebook.SetBackgroundColour(theme['background'])
-            self.notebook.SetTabAreaColour(theme['panel'])
-            self.notebook.SetActiveTabColour(theme['highlight'])
-            self.notebook.SetNonActiveTabTextColour(theme['text_secondary'])
-            self.notebook.SetActiveTabTextColour(theme['highlight_text'])
+            if hasattr(self.notebook, 'SetTabAreaColour'):
+                self.notebook.SetTabAreaColour(theme['panel'])
+                self.notebook.SetActiveTabColour(theme['highlight'])
+                self.notebook.SetNonActiveTabTextColour(theme['text'])
+                self.notebook.SetActiveTabTextColour(theme['highlight_text'])
 
-        # Style all list controls
+        # Style specific known controls
         if hasattr(self, 'table') and self.table:
-            style_list_ctrl(self.table)
+            self.table.SetBackgroundColour(theme['panel'])
+            self.table.SetForegroundColour(theme['text'])
+            for i in range(self.table.GetItemCount()):
+                if i % 2 == 0:
+                    self.table.SetItemBackgroundColour(i, theme['list_even'])
+                else:
+                    self.table.SetItemBackgroundColour(i, theme['list_odd'])
+                self.table.SetItemTextColour(i, theme['text'])
 
-        # The staging tab list controls are created dynamically, so we handle them in refresh_staging_tab
-        # by calling apply_theme at the end of that method.
-
-        # Refresh the whole UI to ensure all color changes are applied
+        # Force refresh everything
         self.Refresh()
+        self.Update()
         self.Layout()
+        
+        # Refresh all child windows
+        for child in self.GetChildren():
+            if child:
+                child.Refresh()
+                child.Update()
 
 
     def about_dialog(self):
-        msg = ("A simple tool to generate audiobooks from EPUB files using Kokoro-82M models\n" +
+        msg = ("A simple tool to generate audiobooks from EPUB files using Chatterbox-TTS voice models.\n" +
                "Distributed under the MIT License.\n\n" +
                "by Claudio Santini 2025\nand many contributors.\n\n" +
                "https://claudio.uk\n\n")
-        wx.MessageBox(msg, "Audiblez")
+        show_themed_message(self, msg, "Audiblez", wx.OK | wx.ICON_INFORMATION)
 
     def create_right_panel(self, splitter_right):
         self.right_panel = wx.Panel(splitter_right)
@@ -718,34 +1035,18 @@ class MainWindow(wx.Frame):
             self.cpu_toggle.SetValue(True)
             torch.set_default_device('cpu')
 
-        sizer.Add(engine_label, pos=(0, 0), flag=wx.ALL, border=border)
-        sizer.Add(engine_toggle_panel, pos=(0, 1), flag=wx.ALL, border=border)
+        sizer.Add(engine_label, pos=(0, 0), flag=wx.ALL, border=5)
+        sizer.Add(engine_toggle_panel, pos=(0, 1), flag=wx.ALL, border=5)
         engine_toggle_panel_sizer = wx.BoxSizer(wx.HORIZONTAL)
         engine_toggle_panel.SetSizer(engine_toggle_panel_sizer)
         engine_toggle_panel_sizer.Add(self.cpu_toggle, 0, wx.ALL, 5)
         engine_toggle_panel_sizer.Add(self.cuda_toggle, 0, wx.ALL, 5)
 
         # Create a list of voices with flags
-        flag_and_voice_list = []
-        for code, l in voices.items():
-            for v in l:
-                flag_and_voice_list.append(f'{flags[code]} {v}')
-
-        voice_label = wx.StaticText(panel, label="Voice:")
-        # Determine default/saved voice
-        saved_voice = self.user_settings.get('voice')
-        if saved_voice and saved_voice in flag_and_voice_list:
-            self.selected_voice = saved_voice
-        else:
-            self.selected_voice = flag_and_voice_list[0] if flag_and_voice_list else ""
-
-        self.voice_dropdown = wx.ComboCtrl(panel, style=wx.CB_READONLY)
-        popup_ctrl = ListBoxComboPopup(flag_and_voice_list)
-        self.voice_dropdown.SetPopupControl(popup_ctrl)
-        self.voice_dropdown.SetValue(self.selected_voice)
-        self.voice_dropdown.Bind(wx.EVT_TEXT, self.on_select_voice)
-        sizer.Add(voice_label, pos=(1, 0), flag=wx.ALL, border=border)
-        sizer.Add(self.voice_dropdown, pos=(1, 1), flag=wx.ALL, border=border)
+        # Chatterbox-TTS: No voice dropdown, remove Kokoro voice selection UI
+        # Instead, show a label indicating Chatterbox-TTS is used and voice is determined by reference audio (voice clone sample)
+        voice_label = wx.StaticText(panel, label="Chatterbox-TTS: Voice is determined by the reference audio sample.")
+        sizer.Add(voice_label, pos=(1, 0), flag=wx.ALL, border=5)
 
         # Add text input for speed
         speed_label = wx.StaticText(panel, label="Speed:")
@@ -760,19 +1061,73 @@ class MainWindow(wx.Frame):
 
         self.speed_text_input = wx.TextCtrl(panel, value=str(self.selected_speed))
         self.speed_text_input.Bind(wx.EVT_TEXT, self.on_select_speed)
-        sizer.Add(speed_label, pos=(2, 0), flag=wx.ALL, border=border)
-        sizer.Add(self.speed_text_input, pos=(2, 1), flag=wx.ALL, border=border)
+        sizer.Add(speed_label, pos=(2, 0), flag=wx.ALL, border=5)
+        sizer.Add(self.speed_text_input, pos=(2, 1), flag=wx.ALL, border=5)
 
         # Add file dialog selector to select output folder
         output_folder_label = wx.StaticText(panel, label="Output Folder:")
         self.output_folder_text_ctrl = wx.TextCtrl(panel, value=os.path.abspath('.'))
         self.output_folder_text_ctrl.SetEditable(False)
-        # self.output_folder_text_ctrl.SetMinSize((200, -1))
         output_folder_button = wx.Button(panel, label="📂 Select")
         output_folder_button.Bind(wx.EVT_BUTTON, self.open_output_folder_dialog)
-        sizer.Add(output_folder_label, pos=(3, 0), flag=wx.ALL, border=border)
-        sizer.Add(self.output_folder_text_ctrl, pos=(3, 1), flag=wx.ALL | wx.EXPAND, border=border)
-        sizer.Add(output_folder_button, pos=(4, 1), flag=wx.ALL, border=border)
+        sizer.Add(output_folder_label, pos=(3, 0), flag=wx.ALL, border=5)
+        sizer.Add(self.output_folder_text_ctrl, pos=(3, 1), flag=wx.ALL | wx.EXPAND, border=5)
+        sizer.Add(output_folder_button, pos=(4, 1), flag=wx.ALL, border=5)
+
+        # --- Chatterbox Model Parameters ---
+        chatterbox_label = wx.StaticText(panel, label="Chatterbox Model Parameters:")
+        font2 = chatterbox_label.GetFont()
+        font2.SetWeight(wx.FONTWEIGHT_BOLD)
+        chatterbox_label.SetFont(font2)
+        sizer.Add(chatterbox_label, pos=(5, 0), flag=wx.ALL, border=5)
+
+        # Voice Style Presets
+        presets_label = wx.StaticText(panel, label="Voice Style Presets:")
+        self.presets_choice = wx.Choice(panel, choices=[
+            "Custom", "Neutral", "Calm", "Expressive", "Dramatic", "Storytelling", "Audiobook", "Fast Speaker"
+        ])
+        self.presets_choice.SetSelection(0)  # Default to "Custom"
+        self.presets_choice.Bind(wx.EVT_CHOICE, self.on_preset_selected)
+        sizer.Add(presets_label, pos=(5, 1), flag=wx.ALL, border=5)
+        sizer.Add(self.presets_choice, pos=(6, 1), flag=wx.ALL, border=5)
+
+        self.model_config_controls = {}
+        # Add sliders/text for each parameter
+        param_defs = [
+            ("exaggeration", 0.0, 2.0, 0.6, 0.01),
+            ("temperature", 0.0, 2.0, 0.8, 0.01),
+            ("cfg_weight", 0.0, 10.0, 0.7, 0.01),
+            ("min_p", 0.0, 1.0, 0.05, 0.01),
+            ("top_p", 0.0, 1.0, 0.95, 0.01),
+            ("repetition_penalty", 0.0, 5.0, 1.0, 0.01),
+        ]
+        for idx, (param, minv, maxv, default, step) in enumerate(param_defs):
+            label = wx.StaticText(panel, label=param.replace('_', ' ').capitalize() + ":")
+            ctrl = wx.SpinCtrlDouble(panel, min=minv, max=maxv, initial=default, inc=step)
+            # Bind change events to update preset to "Custom" when manually changed
+            ctrl.Bind(wx.EVT_SPINCTRLDOUBLE, self.on_parameter_changed)
+            self.model_config_controls[param] = ctrl
+            sizer.Add(label, pos=(7+idx, 0), flag=wx.ALL, border=5)
+            sizer.Add(ctrl, pos=(7+idx, 1), flag=wx.ALL, border=5)
+
+        # --- Voice Clone Sample File Picker ---
+        clone_label = wx.StaticText(panel, label="Voice Clone Sample:")
+        # Load saved voice clone sample path
+        saved_voice_clone_sample = self.user_settings.get('voice_clone_sample', '') or ''
+        self.clone_sample_path = wx.TextCtrl(panel, value=saved_voice_clone_sample, style=wx.TE_READONLY)
+        clone_button = wx.Button(panel, label="Select Sample File")
+        def on_select_clone_sample(event):
+            result, path = show_themed_file_dialog(self, "Select Voice Clone Sample", 
+                                                 wildcard="Audio files (*.wav;*.mp3;*.m4a)|*.wav;*.mp3;*.m4a|All files (*.*)|*.*", 
+                                                 style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST)
+            if result == wx.ID_OK and path:
+                self.clone_sample_path.SetValue(path)
+                # Save the selected voice clone sample to database
+                db.save_user_setting('voice_clone_sample', path)
+        clone_button.Bind(wx.EVT_BUTTON, on_select_clone_sample)
+        sizer.Add(clone_label, pos=(13, 0), flag=wx.ALL, border=5)
+        sizer.Add(self.clone_sample_path, pos=(13, 1), flag=wx.ALL | wx.EXPAND, border=5)
+        sizer.Add(clone_button, pos=(14, 1), flag=wx.ALL, border=5)
 
         # M4B Assembly Method
         m4b_assembly_label = wx.StaticText(panel, label="M4B Assembly:")
@@ -780,46 +1135,44 @@ class MainWindow(wx.Frame):
         m4b_assembly_sizer = wx.BoxSizer(wx.HORIZONTAL)
         m4b_assembly_panel.SetSizer(m4b_assembly_sizer)
 
-        self.m4b_assembly_original_toggle = wx.ToggleButton(m4b_assembly_panel, label="Original")
-        self.m4b_assembly_crispy_toggle = wx.ToggleButton(m4b_assembly_panel, label="Extra Crispy")
-        self.m4b_toggles = [self.m4b_assembly_original_toggle, self.m4b_assembly_crispy_toggle]
+        self.m4b_assembly_toggle = wx.ToggleButton(m4b_assembly_panel, label="Original")
+        self.m4b_assembly_method = 'original'
+        m4b_assembly_sizer.Add(self.m4b_assembly_toggle, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        sizer.Add(m4b_assembly_label, pos=(15, 0), flag=wx.ALL | wx.ALIGN_CENTER_VERTICAL, border=5)
+        sizer.Add(m4b_assembly_panel, pos=(15, 1), flag=wx.ALL, border=5)
 
-        help_icon = wx.StaticText(m4b_assembly_panel, label="❓")
-        help_icon.SetToolTip(
-            "Original method is time-tested. 'Extra Crispy' is best used when experiencing failures to produce an m4b under the original method, especially in Windows.")
+    def on_preset_selected(self, event):
+        """Handle preset selection from dropdown"""
+        presets = {
+            "neutral": {"exaggeration": 0.5, "cfg_weight": 0.5},
+            "calm": {"exaggeration": 0.3, "cfg_weight": 0.6},
+            "expressive": {"exaggeration": 0.7, "cfg_weight": 0.4},
+            "dramatic": {"exaggeration": 1.0, "cfg_weight": 0.3},
+            "storytelling": {"exaggeration": 0.8, "cfg_weight": 0.4},
+            "audiobook": {"exaggeration": 0.4, "cfg_weight": 0.6},
+            "fast_speaker": {"exaggeration": 0.6, "cfg_weight": 0.3},
+        }
+        
+        selected_preset = event.GetString().lower()
+        
+        # Skip if Custom is selected
+        if selected_preset == "custom":
+            return
+            
+        # Apply preset values if they exist
+        if selected_preset in presets:
+            preset_values = presets[selected_preset]
+            
+            # Update the controls with preset values
+            for param_name, value in preset_values.items():
+                if param_name in self.model_config_controls:
+                    self.model_config_controls[param_name].SetValue(value)
 
-        m4b_assembly_sizer.Add(self.m4b_assembly_original_toggle, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
-        m4b_assembly_sizer.Add(self.m4b_assembly_crispy_toggle, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
-        m4b_assembly_sizer.Add(help_icon, 0, wx.ALIGN_CENTER_VERTICAL)
-
-        def on_select_m4b_method(method):
-            self.m4b_assembly_method = method
-            db.save_user_setting('m4b_assembly_method', method)
-            print(f"M4B Assembly method set to {method} and saved.")
-
-        def on_m4b_toggle(event):
-            toggled_button = event.GetEventObject()
-            toggled_button.SetValue(True)
-            for toggle in self.m4b_toggles:
-                if toggle != toggled_button:
-                    toggle.SetValue(False)
-            method = 'crispy' if toggled_button == self.m4b_assembly_crispy_toggle else 'original'
-            on_select_m4b_method(method)
-
-        self.m4b_assembly_original_toggle.Bind(wx.EVT_TOGGLEBUTTON, on_m4b_toggle)
-        self.m4b_assembly_crispy_toggle.Bind(wx.EVT_TOGGLEBUTTON, on_m4b_toggle)
-
-        # Load saved setting or set default
-        saved_m4b_method = self.user_settings.get('m4b_assembly_method', 'original')
-        if saved_m4b_method == 'crispy':
-            self.m4b_assembly_crispy_toggle.SetValue(True)
-            self.m4b_assembly_method = 'crispy'
-        else:
-            self.m4b_assembly_original_toggle.SetValue(True)
-            self.m4b_assembly_method = 'original'
-
-        sizer.Add(m4b_assembly_label, pos=(5, 0), flag=wx.ALL | wx.ALIGN_CENTER_VERTICAL, border=border)
-        sizer.Add(m4b_assembly_panel, pos=(5, 1), flag=wx.ALL, border=border)
+    def on_parameter_changed(self, event):
+        """Handle manual parameter changes - set preset to Custom"""
+        # Set the preset dropdown to "Custom" when user manually changes parameters
+        self.presets_choice.SetSelection(0)  # "Custom" is at index 0
+        event.Skip()
 
     def create_synthesis_panel(self):
         # Think and identify layout issue with the folling code
@@ -886,17 +1239,14 @@ class MainWindow(wx.Frame):
         sizer.Add(self.custom_rate_text_ctrl, 0, wx.ALL | wx.EXPAND, 5)
 
     def open_output_folder_dialog(self, event):
-        with wx.DirDialog(self, "Choose a directory:", style=wx.DD_DEFAULT_STYLE) as dialog:
-            if dialog.ShowModal() == wx.ID_CANCEL:
-                return
-            output_folder = dialog.GetPath()
+        result, output_folder = show_themed_dir_dialog(self, "Choose a directory:")
+        if result == wx.ID_OK and output_folder:
             print(f"Selected output folder: {output_folder}")
             self.output_folder_text_ctrl.SetValue(output_folder)
 
+    # Chatterbox-TTS: No-op, voice selection is not used
     def on_select_voice(self, event):
-        self.selected_voice = self.voice_dropdown.GetValue()
-        db.save_user_setting('voice', self.selected_voice)  # Use db prefix
-        print(f"Voice set to {self.selected_voice} and saved.")
+        pass
         event.Skip()
 
     def on_set_custom_rate(self, event):
@@ -1098,7 +1448,7 @@ class MainWindow(wx.Frame):
                 )
             except Exception as e:
                 print(f"Error opening EPUB file {file_path}: {e}")
-                wx.MessageBox(f"Failed to open or parse the EPUB file:\n\n{e}", "EPUB Error", wx.OK | wx.ICON_ERROR)
+                show_themed_message(self, f"Failed to open or parse the EPUB file:\n\n{e}", "EPUB Error", wx.OK | wx.ICON_ERROR)
 
         if hasattr(self, 'queue_tab_sizer') and self.queue_tab_sizer:
             # Clear the sizer and delete all windows it managed.
@@ -1150,11 +1500,8 @@ class MainWindow(wx.Frame):
                     else:
                         chapters_str = ", ".join([ch['title'] for ch in item_data['chapters']])
                     if not chapters_str: chapters_str = "No specific chapters selected"
-                elif 'selected_chapter_details' in item_data: # From "Queue Whole Book" (legacy or direct chapter objects)
-                    if len(item_data['selected_chapter_details']) > 3:
-                         chapters_str = f"Selected chapters ({len(item_data['selected_chapter_details'])})"
-                    else:
-                        chapters_str = ", ".join([ch.short_name for ch in item_data['selected_chapter_details']])
+                # Remove legacy/old chapter handling. Only support new chapter structure.
+                # (No action needed, just skip legacy logic.)
 
 
                 chapters_label = wx.StaticText(item_container, label=f"Chapters: {chapters_str}")
@@ -1258,18 +1605,18 @@ class MainWindow(wx.Frame):
             selected_datetime = dialog.get_selected_datetime()
             if selected_datetime: # A specific datetime was chosen
                 if selected_datetime < datetime.now():
-                    wx.MessageBox("Scheduled time must be in the future.", "Invalid Time", wx.OK | wx.ICON_ERROR)
+                    show_themed_message(self, "Scheduled time must be in the future.", "Invalid Time", wx.OK | wx.ICON_ERROR)
                     dialog.Destroy()
                     return
 
                 timestamp = int(selected_datetime.timestamp())
                 db.save_schedule_time(timestamp)
-                wx.MessageBox(f"Queue scheduled to run at: {selected_datetime.strftime('%Y-%m-%d %H:%M')}",
+                show_themed_message(self, f"Queue scheduled to run at: {selected_datetime.strftime('%Y-%m-%d %H:%M')}",
                               "Queue Scheduled", wx.OK | wx.ICON_INFORMATION)
                 # self.start_schedule_check_timer() # Call to start timer will be added later
             else: # User explicitly cleared the schedule via the dialog
                 db.save_schedule_time(None) # Pass None to clear
-                wx.MessageBox("Queue schedule has been cleared.", "Schedule Cleared", wx.OK | wx.ICON_INFORMATION)
+                show_themed_message(self, "Queue schedule has been cleared.", "Schedule Cleared", wx.OK | wx.ICON_INFORMATION)
                 # if hasattr(self, 'schedule_check_timer') and self.schedule_check_timer.IsRunning():
                 #     self.schedule_check_timer.Stop()
                 #     print("Schedule check timer stopped.")
@@ -1306,7 +1653,7 @@ class MainWindow(wx.Frame):
             self.update_scheduled_time_display() # Update UI
 
             if not self.queue_items:
-                wx.MessageBox("Scheduled time reached, but the queue is empty.",
+                show_themed_message(self, "Scheduled time reached, but the queue is empty.",
                               "Queue Empty", wx.OK | wx.ICON_INFORMATION)
                 if self.schedule_check_timer.IsRunning(): self.schedule_check_timer.Stop() # Stop timer
                 return
@@ -1375,12 +1722,12 @@ class MainWindow(wx.Frame):
             if self.current_queue_item_index >= 0 and self.current_queue_item_index < len(self.queue_items):
                 currently_processing_item_id = self.queue_items[self.current_queue_item_index].get('id')
                 if currently_processing_item_id == queue_item_id:
-                    wx.MessageBox("Cannot remove an item that is currently being processed.",
+                    show_themed_message(self, "Cannot remove an item that is currently being processed.",
                                   "Action Not Allowed", wx.OK | wx.ICON_WARNING)
                     return
 
         # Optional: Confirmation dialog
-        # confirm = wx.MessageBox(f"Are you sure you want to remove this item from the queue?",
+        # confirm = show_themed_message(self, f"Are you sure you want to remove this item from the queue?",
         #                         "Confirm Removal", wx.YES_NO | wx.ICON_QUESTION)
         # if confirm == wx.NO:
         #     return
@@ -1396,16 +1743,16 @@ class MainWindow(wx.Frame):
         # For now, if queue is active, it might try to process an item that shifted index.
         # However, remove_queue_item is typically for non-active queues or items not yet processed.
 
-        wx.MessageBox("Item removed from queue.", "Queue Updated", wx.OK | wx.ICON_INFORMATION)
+        show_themed_message(self, "Item removed from queue.", "Queue Updated", wx.OK | wx.ICON_INFORMATION)
 
 
     def on_run_queue(self, event):
         if not self.queue_items:
-            wx.MessageBox("Queue is empty. Add items to the queue first.", "Queue Empty", wx.OK | wx.ICON_INFORMATION)
+            show_themed_message(self, "Queue is empty. Add items to the queue first.", "Queue Empty", wx.OK | wx.ICON_INFORMATION)
             return
 
         if self.queue_processing_active:
-            wx.MessageBox("Queue processing is already active.", "Queue Running", wx.OK | wx.ICON_INFORMATION)
+            show_themed_message(self, "Queue processing is already active.", "Queue Running", wx.OK | wx.ICON_INFORMATION)
             return
 
         # Clear any existing schedule if queue is run manually
@@ -1437,7 +1784,7 @@ class MainWindow(wx.Frame):
             return
 
         if self.current_queue_item_index >= len(self.queue_items):
-            wx.MessageBox("All items in the queue have been processed.", "Queue Finished", wx.OK | wx.ICON_INFORMATION)
+            show_themed_message(self, "All items in the queue have been processed.", "Queue Finished", wx.OK | wx.ICON_INFORMATION)
             self._finalize_queue_processing()
             return
 
@@ -1620,7 +1967,6 @@ class MainWindow(wx.Frame):
 
         core_params = {
             'file_path': file_path,
-            'voice': voice,
             'pick_manually': False,
             'speed': speed,
             'output_folder': output_folder,
@@ -1760,7 +2106,7 @@ class MainWindow(wx.Frame):
                          (hasattr(self, 'book_data') and self.book_data)
 
         if not book_is_loaded:
-            wx.MessageBox("Please open an EPUB file first to select and queue book portions.",
+            show_themed_message(self, "Please open an EPUB file first to select and queue book portions.",
                           "No Book Loaded", wx.OK | wx.ICON_INFORMATION)
             return
 
@@ -1771,13 +2117,13 @@ class MainWindow(wx.Frame):
                 selected_chapters_from_table.append(self.document_chapters[i])
 
         if not selected_chapters_from_table:
-            wx.MessageBox("No chapters selected from the list. Please check the chapters you want to queue.",
+            show_themed_message(self, "No chapters selected from the list. Please check the chapters you want to queue.",
                           "No Selection", wx.OK | wx.ICON_INFORMATION)
             return
 
         # Retrieve current global synthesis settings
         current_engine = 'cuda' if self.cuda_toggle.GetValue() else 'cpu'
-        current_voice = self.voice_dropdown.GetValue()  # This includes the flag
+        current_voice = "Chatterbox-TTS"  # Fixed reference since voice_dropdown doesn't exist in Chatterbox version
         current_speed = self.speed_text_input.GetValue()
         current_output_folder = self.output_folder_text_ctrl.GetValue()
 
@@ -1830,15 +2176,15 @@ class MainWindow(wx.Frame):
             # print("DEBUG: Calling refresh_queue_tab()")
             self.refresh_queue_tab()
             self.notebook.SetSelection(self.notebook.GetPageCount() - 1)
-            wx.MessageBox(f"Added selected portions from '{self.selected_book_title}' (with {len(selected_chapters_from_table)} chapter(s)) to the queue.",
+            show_themed_message(self, f"Added selected portions from '{self.selected_book_title}' (with {len(selected_chapters_from_table)} chapter(s)) to the queue.",
                           "Added to Queue", wx.OK | wx.ICON_INFORMATION)
         else:
-            wx.MessageBox("Failed to add item to the database queue.", "Error", wx.OK | wx.ICON_ERROR)
+            show_themed_message(self, "Failed to add item to the database queue.", "Error", wx.OK | wx.ICON_ERROR)
 
 
     def on_stage_book(self, event):
         if not hasattr(self, 'selected_book') or not self.selected_book:
-            wx.MessageBox("Please open an EPUB file first.", "No Book Loaded", wx.OK | wx.ICON_INFORMATION)
+            show_themed_message(self, "Please open an EPUB file first.", "No Book Loaded", wx.OK | wx.ICON_INFORMATION)
             return
 
         book_title = self.selected_book_title
@@ -1859,12 +2205,12 @@ class MainWindow(wx.Frame):
         book_id = add_staged_book(book_title, book_author, source_path, output_folder, chapters_to_stage)
 
         if book_id is not None:
-            wx.MessageBox(f"Book '{book_title}' and its chapters have been staged.", "Book Staged", wx.OK | wx.ICON_INFORMATION)
+            show_themed_message(self, f"Book '{book_title}' and its chapters have been staged.", "Book Staged", wx.OK | wx.ICON_INFORMATION)
             self.refresh_staging_tab()
         elif source_path:
-             wx.MessageBox(f"Book '{book_title}' (from {source_path}) might already be staged. Cannot add duplicate.", "Staging Failed", wx.OK | wx.ICON_ERROR)
+             show_themed_message(self, f"Book '{book_title}' (from {source_path}) might already be staged. Cannot add duplicate.", "Staging Failed", wx.OK | wx.ICON_ERROR)
         else:
-            wx.MessageBox("Failed to stage the book. Check logs for details.", "Staging Failed", wx.OK | wx.ICON_ERROR)
+            show_themed_message(self, "Failed to stage the book. Check logs for details.", "Staging Failed", wx.OK | wx.ICON_ERROR)
 
     def refresh_staging_tab(self):
         # Clear existing content
@@ -1874,7 +2220,6 @@ class MainWindow(wx.Frame):
         from audiblez.database import get_staged_books_with_chapters, update_staged_chapter_selection, update_staged_book_final_compilation
 
         staged_books = get_staged_books_with_chapters()
-
         if not staged_books:
             no_books_label = wx.StaticText(self.staging_tab_panel, label="No books have been staged yet.")
             self.staging_tab_sizer.Add(no_books_label, 0, wx.ALL | wx.ALIGN_CENTER, 15)
@@ -1939,7 +2284,7 @@ class MainWindow(wx.Frame):
                                 current_ui_checked_state = item.IsChecked()
                                 item.Check(not current_ui_checked_state) # Revert
                                 list_ctrl_instance.SetItem(item)
-                                wx.MessageBox("This chapter has already been processed and its selection cannot be changed here.",
+                                show_themed_message(self, "This chapter has already been processed and its selection cannot be changed here.",
                                               "Chapter Processed", wx.OK | wx.ICON_INFORMATION)
                                 return
 
@@ -1987,7 +2332,7 @@ class MainWindow(wx.Frame):
     def on_queue_selected_staged_chapters(self, event, book_id, book_title, chapters_list_ctrl):
         raw_selected_chapters_data = []
         if not chapters_list_ctrl: # Should not happen if button is present
-            wx.MessageBox("Error: Chapter list not found for this book.", "Error", wx.OK | wx.ICON_ERROR)
+            show_themed_message(self, "Error: Chapter list not found for this book.", "Error", wx.OK | wx.ICON_ERROR)
             return
 
         for i in range(chapters_list_ctrl.GetItemCount()):
@@ -2006,7 +2351,7 @@ class MainWindow(wx.Frame):
                 })
 
         if not raw_selected_chapters_data:
-            wx.MessageBox("No chapters selected. Please check the selection.",
+            show_themed_message(self, "No chapters selected. Please check the selection.",
                           "No Selection", wx.OK | wx.ICON_INFORMATION)
             return
 
@@ -2022,7 +2367,7 @@ class MainWindow(wx.Frame):
 
         # Retrieve current global synthesis settings
         current_engine = 'cuda' if self.cuda_toggle.GetValue() else 'cpu'
-        current_voice = self.voice_dropdown.GetValue()
+        current_voice = "Chatterbox-TTS"  # Fixed reference since voice_dropdown doesn't exist in Chatterbox version
         current_speed = self.speed_text_input.GetValue()
         current_output_folder = self.output_folder_text_ctrl.GetValue()
 
@@ -2050,39 +2395,191 @@ class MainWindow(wx.Frame):
             # print("DEBUG: Calling refresh_queue_tab()")
             self.refresh_queue_tab()
             self.notebook.SetSelection(self.notebook.GetPageCount() - 1)
-            wx.MessageBox(f"Added '{book_title}' (with {len(final_chapters_for_db)} selected chapter(s)) to the queue.",
+            show_themed_message(self, f"Added '{book_title}' (with {len(final_chapters_for_db)} selected chapter(s)) to the queue.",
                           "Added to Queue", wx.OK | wx.ICON_INFORMATION)
         else:
-            wx.MessageBox("Failed to add item to the database queue.", "Error", wx.OK | wx.ICON_ERROR)
+            show_themed_message(self, "Failed to add item to the database queue.", "Error", wx.OK | wx.ICON_ERROR)
 
 
     def get_selected_voice(self):
-        return self.voice_dropdown.GetValue().split(' ')[1]
+        # Chatterbox-TTS: voice is determined by the reference audio sample, so return None
+        return None
 
     def get_selected_speed(self):
         return float(self.selected_speed)
 
+    def on_tidy_text(self, event):
+        """Clean up text formatting by removing excessive line breaks and improving readability"""
+        if not self.selected_chapter:
+            show_themed_message(self, "No chapter selected. Please select a chapter first.", 
+                              "No Chapter Selected", wx.OK | wx.ICON_INFORMATION)
+            return
+        
+        original_text = self.text_area.GetValue()
+        if not original_text.strip():
+            show_themed_message(self, "The selected chapter appears to be empty.", 
+                              "Empty Chapter", wx.OK | wx.ICON_INFORMATION)
+            return
+        
+        # Apply text cleaning algorithms
+        cleaned_text = self._clean_epub_text(original_text)
+        
+        # Update the text area and chapter data
+        self.text_area.SetValue(cleaned_text)
+        self.selected_chapter.extracted_text = cleaned_text
+        
+        show_themed_message(self, "Text formatting has been cleaned up successfully!", 
+                          "Text Tidied", wx.OK | wx.ICON_INFORMATION)
+    
+    def _clean_epub_text(self, text):
+        """Apply various text cleaning algorithms to improve formatting"""
+        import re
+        
+        # Initial cleanup - remove excessive whitespace
+        text = re.sub(r'[ \t]+', ' ', text)  # Multiple spaces/tabs to single space
+        text = re.sub(r' *\n *', '\n', text)  # Remove spaces around newlines
+        
+        # Split into lines for processing
+        lines = text.split('\n')
+        cleaned_lines = []
+        
+        i = 0
+        while i < len(lines):
+            current_line = lines[i].strip()
+            
+            # Handle empty lines - preserve single empty lines, remove excessive ones
+            if not current_line:
+                # Only add empty line if the last added line wasn't empty
+                if cleaned_lines and cleaned_lines[-1] != '':
+                    cleaned_lines.append('')
+                i += 1
+                continue
+            
+            # Look ahead to see if we should merge with subsequent lines
+            merged_line = current_line
+            j = i + 1
+            
+            while j < len(lines):
+                next_line = lines[j].strip()
+                
+                # Skip empty lines when looking ahead
+                if not next_line:
+                    j += 1
+                    continue
+                
+                # Determine if current line should be merged with next line
+                should_merge = False
+                
+                # Case 1: Current line doesn't end with sentence terminator and isn't a dialogue/quote line
+                if (not re.search(r'[.!?:;]$', merged_line) and 
+                    not merged_line.endswith('"') and 
+                    not merged_line.endswith("'") and
+                    len(merged_line) > 5):
+                    should_merge = True
+                
+                # Case 2: Current line ends with comma, dash, or continuation punctuation
+                elif re.search(r'[,\-—]$', merged_line):
+                    should_merge = True
+                
+                # Case 3: Next line starts with lowercase (clear continuation)
+                elif (next_line and next_line[0].islower() and 
+                      not next_line.startswith('"') and 
+                      not next_line.startswith("'")):
+                    should_merge = True
+                
+                # Case 4: Current line ends with word + next starts with word (broken word wrapping)
+                elif (re.search(r'\w$', merged_line) and 
+                      re.search(r'^\w', next_line) and
+                      not next_line[0].isupper()):
+                    should_merge = True
+                
+                # Don't merge if next line looks like a new paragraph/section
+                if (should_merge and
+                    (re.search(r'^(Chapter|CHAPTER|\d+\.|\*)', next_line) or
+                     len(next_line) < 3 or  # Very short lines might be intentional breaks
+                     next_line.isupper())):  # All caps might be headings
+                    should_merge = False
+                
+                if should_merge:
+                    # Merge the lines with appropriate spacing
+                    if merged_line.endswith('-') or merged_line.endswith('—'):
+                        # Hyphenated word continuation
+                        merged_line = merged_line[:-1] + next_line
+                    else:
+                        # Normal space between words
+                        merged_line += ' ' + next_line
+                    j += 1
+                else:
+                    break
+            
+            cleaned_lines.append(merged_line)
+            i = j if j > i + 1 else i + 1
+        
+        # Rejoin and apply final formatting
+        text = '\n'.join(cleaned_lines)
+        
+        # Fix punctuation spacing issues
+        text = re.sub(r'\s+([.!?,:;])', r'\1', text)  # Remove space before punctuation
+        text = re.sub(r'([.!?])\s*([A-Z])', r'\1 \2', text)  # Space after sentence endings
+        text = re.sub(r'([.!?])\s*\n', r'\1\n', text)  # Clean line endings after sentences
+        
+        # Normalize paragraph breaks
+        text = re.sub(r'\n{3,}', '\n\n', text)  # Max 2 consecutive newlines
+        text = re.sub(r'\n\s*\n', '\n\n', text)  # Clean up paragraph breaks
+        
+        # Add natural spacing after sentences within paragraphs
+        text = re.sub(r'([.!?])([A-Z])', r'\1 \2', text)  # Ensure space between sentences
+        
+        # Final cleanup
+        text = re.sub(r'\n +', '\n', text)  # Remove leading spaces on lines
+        text = re.sub(r' +\n', '\n', text)  # Remove trailing spaces on lines
+        text = text.strip()
+        
+        return text
+
     def on_preview_chapter(self, event):
-        lang_code = self.get_selected_voice()[0]
+        import numpy as np
+        import soundfile
+        from tempfile import NamedTemporaryFile
+        from audiblez import core
+        from chatterbox import ChatterboxTTS
+        import subprocess
         button = event.GetEventObject()
         button.SetLabel("⏳")
         button.Disable()
 
         def generate_preview():
-            import audiblez.core as core
-            from kokoro import KPipeline
-            pipeline = KPipeline(lang_code=lang_code)
             core.load_spacy()
-            text = self.selected_chapter.extracted_text[:300]
-            if len(text) == 0: return
-            audio_segments = core.gen_audio_segments(
-                pipeline,
+            text = self.selected_chapter.extracted_text[:300] if self.selected_chapter else ""
+            if len(text) == 0:
+                button.SetLabel("🔊 Preview")
+                button.Enable()
+                return
+            # Gather Chatterbox model config from UI controls
+            tts_model_config = {k: ctrl.GetValue() for k, ctrl in self.model_config_controls.items()}
+            voice_clone_sample = self.clone_sample_path.GetValue() or None
+            # Chatterbox-TTS: Use from_pretrained and .generate for preview
+            model = ChatterboxTTS.from_pretrained('cuda' if torch.cuda.is_available() else 'cpu')
+            wav = model.generate(
                 text,
-                voice=self.get_selected_voice(),
-                speed=self.get_selected_speed())
-            final_audio = np.concatenate(audio_segments)
+                audio_prompt_path=voice_clone_sample,
+                exaggeration=tts_model_config.get('exaggeration', 1.0),
+                temperature=tts_model_config.get('temperature', 1.0),
+                cfg_weight=tts_model_config.get('cfg_weight', 5.0),
+                min_p=tts_model_config.get('min_p', 0.05),
+                top_p=tts_model_config.get('top_p', 0.95),
+                repetition_penalty=tts_model_config.get('repetition_penalty', 1.0),
+            )
             tmp_preview_wav_file = NamedTemporaryFile(suffix='.wav', delete=False)
-            soundfile.write(tmp_preview_wav_file, final_audio, core.sample_rate)
+            if hasattr(wav, 'cpu'):  # PyTorch tensor
+                audio_data = wav.squeeze(0).cpu().numpy()
+            else:  # numpy array
+                audio_data = wav.squeeze(0) if wav.ndim > 1 else wav
+            
+            # Remove excessive pauses from preview audio as well
+            audio_data = core.remove_excessive_pauses(audio_data, model.sr, max_pause_duration=3.0)
+            
+            soundfile.write(tmp_preview_wav_file, audio_data, model.sr)
             cmd = ['ffplay', '-autoexit', '-nodisp', tmp_preview_wav_file.name]
             subprocess.run(cmd)
             button.SetLabel("🔊 Preview")
@@ -2099,7 +2596,7 @@ class MainWindow(wx.Frame):
     def on_start(self, event):
         self.synthesis_in_progress = True
         file_path = self.selected_file_path
-        voice = self.voice_dropdown.GetValue().split(' ')[1]
+        voice = None  # Chatterbox-TTS: voice is determined by reference audio sample
         speed = float(self.selected_speed)
         selected_chapters = []
         for i in range(self.table.GetItemCount()):
@@ -2114,16 +2611,20 @@ class MainWindow(wx.Frame):
                 self.set_table_chapter_status(chapter_index, "Planned")
                 # self.table.SetItem(chapter_index, 0, '✔️') # Checkmarking handled by table.CheckItem in create_chapters_table_panel
 
+        # Gather TTS model config and voice clone sample
+        tts_model_config = {k: ctrl.GetValue() for k, ctrl in self.model_config_controls.items()}
+        voice_clone_sample = self.clone_sample_path.GetValue() or None
         core_params = {
             'file_path': file_path, # This is the original input file path
-            'voice': voice,
             'pick_manually': False,
             'speed': speed,
             'output_folder': self.output_folder_text_ctrl.GetValue(),
             'selected_chapters': selected_chapters,
             'calibre_metadata': None, # Default to None
             'calibre_cover_image_path': None, # Default to None
-            'm4b_assembly_method': self.m4b_assembly_method
+            'm4b_assembly_method': self.m4b_assembly_method,
+            'tts_model_config': tts_model_config,
+            'voice_clone_sample': voice_clone_sample
         }
 
         # Check if this book was loaded via Calibre by inspecting self.book_data
@@ -2146,18 +2647,14 @@ class MainWindow(wx.Frame):
         self.core_thread.start()
 
     def on_open(self, event):
-        with wx.FileDialog(self, "Open EPUB File", wildcard="*.epub", style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as dialog:
-            if dialog.ShowModal() == wx.ID_CANCEL:
-                return
-            file_path = dialog.GetPath()
-            print(f"Selected file: {file_path}")
-            if not file_path:
-                print('No filepath?')
-                return
-            if self.synthesis_in_progress:
-                wx.MessageBox("Audiobook synthesis is still in progress. Please wait for it to finish.", "Audiobook Synthesis in Progress")
-            else:
-                wx.CallAfter(self._load_epub_file, file_path)
+        result, file_path = show_themed_file_dialog(self, "Open EPUB File", wildcard="*.epub", style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST)
+        if result != wx.ID_OK or not file_path:
+            return
+        print(f"Selected file: {file_path}")
+        if self.synthesis_in_progress:
+            show_themed_message(self, "Audiobook synthesis is still in progress. Please wait for it to finish.", "Audiobook Synthesis in Progress")
+        else:
+            wx.CallAfter(self._load_epub_file, file_path)
 
     def on_open_with_calibre(self, event):
         from audiblez.core import get_calibre_ebook_convert_path, convert_ebook_with_calibre, extract_chapters_and_metadata_from_calibre_html
@@ -2190,14 +2687,14 @@ class MainWindow(wx.Frame):
             else:
                 wildcard = "ebook-convert executable (ebook-convert)|ebook-convert|All files (*.*)|*.*"
 
-            with wx.FileDialog(self, message, wildcard=wildcard,
-                               style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as fileDialog:
-                if fileDialog.ShowModal() == wx.ID_CANCEL:
-                    return None  # User cancelled
-                
-                # Return the directory containing the selected file, as the core function expects.
-                selected_path = Path(fileDialog.GetPath())
-                return str(selected_path.parent)
+            result, selected_file = show_themed_file_dialog(self, message, wildcard=wildcard,
+                               style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST)
+            if result == wx.ID_CANCEL or not selected_file:
+                return None  # User cancelled
+            
+            # Return the directory containing the selected file, as the core function expects.
+            selected_path = Path(selected_file)
+            return str(selected_path.parent)
 
         # 1. Check for Calibre's existence first, prompting the user if necessary.
         # We pass our GUI callback function here.
@@ -2205,23 +2702,19 @@ class MainWindow(wx.Frame):
 
         # If no path was found (either automatically or by the user), abort.
         if not ebook_convert_exe:
-            wx.MessageBox("Calibre's 'ebook-convert' tool could not be found. The process has been cancelled.",
+            show_themed_message(self, "Calibre's 'ebook-convert' tool could not be found. The process has been cancelled.",
                           "Calibre Not Found", wx.OK | wx.ICON_ERROR)
             return
 
         # 2. If Calibre is found, now prompt the user to select an ebook file.
         wildcard_str = "Ebook files (*.epub;*.mobi;*.azw;*.azw3;*.fb2;*.lit;*.pdf)|*.epub;*.mobi;*.azw;*.azw3;*.fb2;*.lit;*.pdf|All files (*.*)|*.*"
-        with wx.FileDialog(self, "Select Ebook to Convert with Calibre", wildcard=wildcard_str,
-                           style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as dialog:
-            if dialog.ShowModal() == wx.ID_CANCEL:
-                return # User cancelled file selection
-            input_ebook_path = dialog.GetPath()
-
-        if not input_ebook_path:
-            return
+        result, input_ebook_path = show_themed_file_dialog(self, "Select Ebook to Convert with Calibre", wildcard=wildcard_str,
+                           style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST)
+        if result == wx.ID_CANCEL or not input_ebook_path:
+            return # User cancelled file selection
 
         if self.synthesis_in_progress:
-            wx.MessageBox("Audiobook synthesis is in progress. Please wait for it to finish.",
+            show_themed_message(self, "Audiobook synthesis is in progress. Please wait for it to finish.",
                           "Synthesis Busy", wx.OK | wx.ICON_WARNING)
             return
 
@@ -2241,7 +2734,7 @@ class MainWindow(wx.Frame):
             wx.EndBusyCursor()
 
             if not html_file_path:
-                wx.MessageBox(f"Failed to convert '{Path(input_ebook_path).name}' using Calibre. Check console for errors.",
+                show_themed_message(self, f"Failed to convert '{Path(input_ebook_path).name}' using Calibre. Check console for errors.",
                               "Calibre Conversion Failed", wx.OK | wx.ICON_ERROR)
                 return
 
@@ -2251,7 +2744,7 @@ class MainWindow(wx.Frame):
 
             if not extracted_chapters:
                 title_from_meta = book_metadata.get('title', Path(input_ebook_path).stem)
-                wx.MessageBox(f"Could not extract chapters from the HTML output of '{title_from_meta}'. The book might be empty or in an unexpected format.",
+                show_themed_message(self, f"Could not extract chapters from the HTML output of '{title_from_meta}'. The book might be empty or in an unexpected format.",
                               "Chapter Extraction Failed", wx.OK | wx.ICON_WARNING)
 
             # Store calibre-specific data that might be used by other functions
@@ -2272,7 +2765,7 @@ class MainWindow(wx.Frame):
             )
 
             if extracted_chapters:
-                wx.MessageBox(f"Successfully processed '{self.selected_book_title}' using Calibre.",
+                show_themed_message(self, f"Successfully processed '{self.selected_book_title}' using Calibre.",
                               "Processing Complete", wx.OK | wx.ICON_INFORMATION)
 
         finally:
@@ -2311,7 +2804,7 @@ class CoreThread(threading.Thread):
         self.params = params
 
     def run(self):
-        import core
+        from audiblez import core
         core.main(**self.params, post_event=self.post_event)
 
     def post_event(self, event_name, **kwargs):
@@ -2408,6 +2901,10 @@ class ScheduleDialog(wx.Dialog):
         self.date_picker.SetHeaderColours(theme['highlight'], theme['highlight_text'])
         self.date_picker.SetHighlightColours(theme['highlight'], theme['highlight_text'])
 
+        # Apply Windows dark mode if available
+        if theme == palettes['dark']:
+            apply_windows_dark_mode_to_window(self, True)
+
     def on_ok(self, event):
         wx_date = self.date_picker.GetDate()
         date_val = datetime(wx_date.GetYear(), wx_date.GetMonth() + 1, wx_date.GetDay())
@@ -2416,7 +2913,7 @@ class ScheduleDialog(wx.Dialog):
         try:
             time_val = datetime.strptime(time_str, "%H:%M").time()
         except ValueError:
-            wx.MessageBox("Invalid time format. Please use HH:MM (24-hour).", "Error", wx.OK | wx.ICON_ERROR, self)
+            show_themed_message(self, "Invalid time format. Please use HH:MM (24-hour).", "Error", wx.OK | wx.ICON_ERROR)
             return
 
         self.selected_datetime = datetime.combine(date_val.date(), time_val)
