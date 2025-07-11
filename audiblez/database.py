@@ -48,7 +48,6 @@ def create_tables(conn: sqlite3.Connection):
         CREATE TABLE IF NOT EXISTS user_settings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             engine TEXT,
-            voice TEXT,
             speed REAL,
             custom_rate INTEGER,
             next_scheduled_run INTEGER, -- Stores Unix timestamp for next schedule
@@ -165,7 +164,7 @@ def save_user_setting(setting_name: str, setting_value):
         cursor.execute("SELECT id FROM user_settings WHERE id = 1")
         row = cursor.fetchone()
 
-        valid_columns = ["engine", "voice", "speed", "custom_rate", "next_scheduled_run", "calibre_ebook_convert_path", "m4b_assembly_method", "dark_mode", "window_geometry", "voice_clone_sample"]
+        valid_columns = ["engine", "custom_rate", "next_scheduled_run", "calibre_ebook_convert_path", "m4b_assembly_method", "dark_mode", "window_geometry", "voice_clone_sample"]
         if setting_name not in valid_columns:
             print(f"Error: Invalid setting_name '{setting_name}' for update/insert.")
             return # Or raise an error
@@ -208,7 +207,7 @@ def load_user_setting(setting_name: str):
     conn = connect_db()
     cursor = conn.cursor()
     try:
-        valid_columns = ["engine", "voice", "speed", "custom_rate", "next_scheduled_run", "calibre_ebook_convert_path", "m4b_assembly_method", "dark_mode", "window_geometry", "voice_clone_sample", "id"] # id for validation
+        valid_columns = ["engine", "custom_rate", "next_scheduled_run", "calibre_ebook_convert_path", "m4b_assembly_method", "dark_mode", "window_geometry", "voice_clone_sample", "id"] # id for validation
         if setting_name not in valid_columns:
             print(f"Error: Invalid setting_name '{setting_name}' for load.")
             # Pass to let SQLite handle "no such column" if it's truly an invalid/new column
@@ -238,20 +237,18 @@ def load_all_user_settings() -> dict:
     settings = {}
     try:
         # Assuming settings are in a single row with id = 1
-        cursor.execute("SELECT engine, voice, speed, custom_rate, next_scheduled_run, calibre_ebook_convert_path, m4b_assembly_method, dark_mode, window_geometry, voice_clone_sample FROM user_settings WHERE id = 1")
+        cursor.execute("SELECT engine, custom_rate, next_scheduled_run, calibre_ebook_convert_path, m4b_assembly_method, dark_mode, window_geometry, voice_clone_sample FROM user_settings WHERE id = 1")
         row = cursor.fetchone()
         if row:
             settings = {
                 "engine": row[0],
-                "voice": row[1],
-                "speed": row[2],
-                "custom_rate": row[3],
-                "next_scheduled_run": row[4],
-                "calibre_ebook_convert_path": row[5],
-                "m4b_assembly_method": row[6],
-                "dark_mode": row[7],
-                "window_geometry": row[8],
-                "voice_clone_sample": row[9],
+                "custom_rate": row[1],
+                "next_scheduled_run": row[2],
+                "calibre_ebook_convert_path": row[3],
+                "m4b_assembly_method": row[4],
+                "dark_mode": row[5],
+                "window_geometry": row[6],
+                "voice_clone_sample": row[7],
             }
         return settings
     except sqlite3.Error as e:

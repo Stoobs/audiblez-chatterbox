@@ -11,13 +11,6 @@ import torch
 from audiblez.database import load_all_user_settings
 from audiblez.core import main
 
-def _parse_speed_setting(speed_value: Any) -> float:
-    """Parse and validate speed setting from database."""
-    try:
-        return float(speed_value) if speed_value is not None else 1.0
-    except (ValueError, TypeError):
-        return 1.0
-
 def cli_main() -> None:
     """Main entry point for the command-line interface."""
     
@@ -32,12 +25,10 @@ def cli_main() -> None:
 
     # Load settings from database
     db_settings: Dict[str, Any] = load_all_user_settings() or {}
-    default_speed_from_db: float = _parse_speed_setting(db_settings.get('speed', 1.0))
 
     parser = argparse.ArgumentParser(epilog=epilog, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('epub_file_path', help='Path to the epub file')
     parser.add_argument('-p', '--pick', default=False, help='Interactively select which chapters to read in the audiobook', action='store_true')
-    parser.add_argument('-s', '--speed', default=default_speed_from_db, help=f'Set speed from 0.5 to 2.0 (default: {default_speed_from_db})', type=float)
     parser.add_argument('-c', '--cuda', default=False, help='Use GPU via Cuda in Torch if available', action='store_true')
     parser.add_argument('-o', '--output', default='.', help='Output folder for the audiobook and temporary files', metavar='FOLDER')
     parser.add_argument('--voice-sample', help='Path to audio file for voice cloning (optional)', metavar='FILE')
@@ -74,7 +65,6 @@ def cli_main() -> None:
     main(
         file_path=args.epub_file_path,
         pick_manually=args.pick,
-        speed=args.speed,
         output_folder=args.output,
         voice_clone_sample=args.voice_sample
     )

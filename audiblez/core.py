@@ -276,7 +276,7 @@ def set_espeak_library():
         print("On Linux: sudo apt install espeak-ng")
 
 
-def main(file_path, pick_manually, speed, output_folder='.',
+def main(file_path, pick_manually, output_folder='.',
          max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None,
          calibre_metadata: dict | None = None, calibre_cover_image_path: str | None = None,
          m4b_assembly_method: str = 'original',
@@ -694,40 +694,6 @@ def print_selected_chapters(document_chapters, chapters):
         [i, c.get_name(), len(c.extracted_text), ok if c in chapters else '', chapter_beginning_one_liner(c)]
         for i, c in enumerate(document_chapters, start=1)
     ], headers=['#', 'Chapter', 'Text Length', 'Selected', 'First words']))
-
-
-def gen_audio_segments(pipeline, text, speed, stats=None, max_sentences=None, post_event=None):
-    nlp = spacy.load('xx_ent_wiki_sm')
-    nlp.add_pipe('sentencizer')
-    audio_segments = []
-    doc = nlp(text)
-    sentences = list(doc.sents)
-    for i, sent in enumerate(sentences):
-        if max_sentences and i > max_sentences: break
-        # ChatterboxTTS: generate audio for each sentence
-        audio = pipeline.generate(sent.text)
-        audio_segments.append(audio)
-        if stats:
-            stats.processed_chars += len(sent.text)
-            if stats.total_chars > 0:
-                stats.progress = int((stats.processed_chars / stats.total_chars) * 100)
-            else:
-                stats.progress = 100
-            stats.eta = strfdelta((stats.total_chars - stats.processed_chars) / stats.chars_per_sec)
-            if post_event: post_event('CORE_PROGRESS', stats=stats)
-            print(f'Estimated time remaining: {stats.eta}')
-            print('Progress:', f'{stats.progress}%\n')
-    return audio_segments
-
-
-def gen_text(text, output_file='text.wav', speed=1, play=False):
-    pipeline = ChatterboxTTS.from_pretrained('cuda' if torch.cuda.is_available() else 'cpu')
-    load_spacy()
-    audio_segments = gen_audio_segments(pipeline, text, speed)
-    final_audio = np.concatenate(audio_segments)
-    soundfile.write(output_file, final_audio, sample_rate)
-    if play:
-        subprocess.run(['ffplay', '-autoexit', '-nodisp', output_file])
 
 
 def find_document_chapters_and_extract_texts(book):

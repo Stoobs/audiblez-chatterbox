@@ -454,8 +454,6 @@ class MainWindow(wx.Frame):
         # Initialize core attributes that will be set by UI controls,
         # potentially using loaded settings or defaults.
         # These will be properly set in create_params_panel and create_synthesis_panel
-        self.selected_voice = None
-        self.selected_speed = 1.0 # Default speed
         self.custom_rate = None # Default custom rate
         self.m4b_assembly_method = 'original' # Default M4B assembly method
 
@@ -1042,28 +1040,6 @@ class MainWindow(wx.Frame):
         engine_toggle_panel_sizer.Add(self.cpu_toggle, 0, wx.ALL, 5)
         engine_toggle_panel_sizer.Add(self.cuda_toggle, 0, wx.ALL, 5)
 
-        # Create a list of voices with flags
-        # Chatterbox-TTS: No voice dropdown, remove Kokoro voice selection UI
-        # Instead, show a label indicating Chatterbox-TTS is used and voice is determined by reference audio (voice clone sample)
-        voice_label = wx.StaticText(panel, label="Chatterbox-TTS: Voice is determined by the reference audio sample.")
-        sizer.Add(voice_label, pos=(1, 0), flag=wx.ALL, border=5)
-
-        # Add text input for speed
-        speed_label = wx.StaticText(panel, label="Speed:")
-        saved_speed = self.user_settings.get('speed')
-        if saved_speed is not None:
-            try:
-                self.selected_speed = float(saved_speed)
-            except ValueError:
-                self.selected_speed = 1.0 # Default if conversion fails
-        else:
-            self.selected_speed = 1.0 # Default if not set
-
-        self.speed_text_input = wx.TextCtrl(panel, value=str(self.selected_speed))
-        self.speed_text_input.Bind(wx.EVT_TEXT, self.on_select_speed)
-        sizer.Add(speed_label, pos=(2, 0), flag=wx.ALL, border=5)
-        sizer.Add(self.speed_text_input, pos=(2, 1), flag=wx.ALL, border=5)
-
         # Add file dialog selector to select output folder
         output_folder_label = wx.StaticText(panel, label="Output Folder:")
         self.output_folder_text_ctrl = wx.TextCtrl(panel, value=os.path.abspath('.'))
@@ -1244,11 +1220,6 @@ class MainWindow(wx.Frame):
             print(f"Selected output folder: {output_folder}")
             self.output_folder_text_ctrl.SetValue(output_folder)
 
-    # Chatterbox-TTS: No-op, voice selection is not used
-    def on_select_voice(self, event):
-        pass
-        event.Skip()
-
     def on_set_custom_rate(self, event):
         rate_str = event.GetString()
         if not rate_str: # Empty input
@@ -1279,26 +1250,6 @@ class MainWindow(wx.Frame):
             # else:
             #    self.custom_rate_text_ctrl.SetValue("")
 
-
-    def on_select_speed(self, event):
-        try:
-            speed_str = event.GetString()
-            # Allow empty string or partial input without immediate error
-            if not speed_str:
-                # self.selected_speed remains unchanged or you can set a temp invalid state
-                return
-
-            speed = float(speed_str)
-            if speed > 0: # Basic validation
-                self.selected_speed = speed
-                db.save_user_setting('speed', self.selected_speed) # Use db prefix
-                print(f'Selected speed {self.selected_speed} and saved.')
-            # else: provide feedback for invalid speed if desired
-        except ValueError:
-            # Handle cases like "1.a" - often wx yields char by char
-            # For now, just print error or ignore. User will see input not fully numeric.
-            print(f"Invalid speed input: {event.GetString()}")
-            # Optionally, reset to last valid speed or show error in UI
 
     def _load_book_data_into_ui(self, book_title, book_author, document_chapters, source_path, book_object=None, cover_info=None):
         # Cleanup previous dynamic UI parts if they exist
@@ -1510,14 +1461,10 @@ class MainWindow(wx.Frame):
                 # Synthesis settings
                 settings = item_data.get('synthesis_settings', {})
                 engine_label = wx.StaticText(item_container, label=f"Engine: {settings.get('engine', 'N/A')}")
-                voice_label = wx.StaticText(item_container, label=f"Voice: {settings.get('voice', 'N/A')}")
-                speed_label = wx.StaticText(item_container, label=f"Speed: {settings.get('speed', 'N/A')}")
                 output_label = wx.StaticText(item_container, label=f"Output: {settings.get('output_folder', 'N/A')}")
                 output_label.Wrap(self.window_width // 3)  # Wrap text if too long
 
                 item_sizer.Add(engine_label, 0, wx.ALL | wx.EXPAND, 2)
-                item_sizer.Add(voice_label, 0, wx.ALL | wx.EXPAND, 2)
-                item_sizer.Add(speed_label, 0, wx.ALL | wx.EXPAND, 2)
                 item_sizer.Add(output_label, 0, wx.ALL | wx.EXPAND, 2)
 
                 # Store a reference to the container panel in the item_data if needed for updates
@@ -1914,22 +1861,6 @@ class MainWindow(wx.Frame):
             self.current_queue_item_index += 1
             wx.CallAfter(self.process_next_queue_item)
 
-        # --- Validate and extract synthesis settings from the queued item ---
-        voice_flagged = synthesis_settings.get('voice')
-        if not voice_flagged:
-            fail_item("Missing 'voice' setting")
-            return
-        voice = voice_flagged.split(' ')[1] if ' ' in voice_flagged else voice_flagged
-
-        try:
-            speed_str = synthesis_settings.get('speed')
-            if speed_str is None:
-                fail_item("Missing 'speed' setting")
-                return
-            speed = float(speed_str)
-        except (ValueError, TypeError):
-            fail_item(f"Invalid 'speed' setting: {synthesis_settings.get('speed')}")
-            return
 
         output_folder = synthesis_settings.get('output_folder')
         if not output_folder:
@@ -1968,7 +1899,6 @@ class MainWindow(wx.Frame):
         core_params = {
             'file_path': file_path,
             'pick_manually': False,
-            'speed': speed,
             'output_folder': output_folder,
             'selected_chapters': chapters_to_synthesize,
             'calibre_metadata': None,
@@ -2123,14 +2053,10 @@ class MainWindow(wx.Frame):
 
         # Retrieve current global synthesis settings
         current_engine = 'cuda' if self.cuda_toggle.GetValue() else 'cpu'
-        current_voice = "Chatterbox-TTS"  # Fixed reference since voice_dropdown doesn't exist in Chatterbox version
-        current_speed = self.speed_text_input.GetValue()
         current_output_folder = self.output_folder_text_ctrl.GetValue()
 
         synthesis_settings = {
             'engine': current_engine,
-            'voice': current_voice,
-            'speed': current_speed,
             'output_folder': current_output_folder,
             # Initialize Calibre specific overrides to None
             'calibre_metadata_override': None,
@@ -2367,14 +2293,10 @@ class MainWindow(wx.Frame):
 
         # Retrieve current global synthesis settings
         current_engine = 'cuda' if self.cuda_toggle.GetValue() else 'cpu'
-        current_voice = "Chatterbox-TTS"  # Fixed reference since voice_dropdown doesn't exist in Chatterbox version
-        current_speed = self.speed_text_input.GetValue()
         current_output_folder = self.output_folder_text_ctrl.GetValue()
 
         synthesis_settings = { # This is a dict
             'engine': current_engine,
-            'voice': current_voice,
-            'speed': current_speed,
             'output_folder': current_output_folder,
             'm4b_assembly_method': self.m4b_assembly_method,
         }
@@ -2400,13 +2322,6 @@ class MainWindow(wx.Frame):
         else:
             show_themed_message(self, "Failed to add item to the database queue.", "Error", wx.OK | wx.ICON_ERROR)
 
-
-    def get_selected_voice(self):
-        # Chatterbox-TTS: voice is determined by the reference audio sample, so return None
-        return None
-
-    def get_selected_speed(self):
-        return float(self.selected_speed)
 
     def on_tidy_text(self, event):
         """Clean up text formatting by removing excessive line breaks and improving readability"""
@@ -2596,8 +2511,6 @@ class MainWindow(wx.Frame):
     def on_start(self, event):
         self.synthesis_in_progress = True
         file_path = self.selected_file_path
-        voice = None  # Chatterbox-TTS: voice is determined by reference audio sample
-        speed = float(self.selected_speed)
         selected_chapters = []
         for i in range(self.table.GetItemCount()):
             if self.table.IsItemChecked(i):
@@ -2617,7 +2530,6 @@ class MainWindow(wx.Frame):
         core_params = {
             'file_path': file_path, # This is the original input file path
             'pick_manually': False,
-            'speed': speed,
             'output_folder': self.output_folder_text_ctrl.GetValue(),
             'selected_chapters': selected_chapters,
             'calibre_metadata': None, # Default to None
