@@ -43,23 +43,16 @@ def cli_main() -> None:
     engine_from_db = db_settings.get('engine')
 
     if use_cuda_from_cli:
-        if torch.cuda.is_available():
-            print('CUDA GPU available (specified by user via --cuda). Using CUDA.')
-            torch.set_default_device('cuda')
-        else:
-            print('CUDA GPU not available (specified by user via --cuda, but unavailable). Defaulting to CPU.')
-            torch.set_default_device('cpu')
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        print(f'{device.upper()} selected (specified by user via --cuda).')
     elif engine_from_db == 'cuda':
-        if torch.cuda.is_available():
-            print('CUDA GPU available (from database settings). Using CUDA.')
-            torch.set_default_device('cuda')
-        else:
-            print('CUDA GPU not available (from database settings, but unavailable). Defaulting to CPU.')
-            torch.set_default_device('cpu')
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        print(f'{device.upper()} selected (from database settings).')
     else:
-        # Default to CPU if --cuda not used and DB setting is not 'cuda' or not present
-        print('Defaulting to CPU (no CUDA specified by user and not set to CUDA in DB).')
-        torch.set_default_device('cpu')
+        device = get_best_device()
+        print(f'Defaulting to {device.upper()} (no CUDA specified by user and not set to CUDA in DB).')
+
+    torch.set_default_device(device)
 
     # Call main() with correct parameter names matching the function signature
     main(

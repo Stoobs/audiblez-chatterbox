@@ -27,6 +27,8 @@ import json  # For settings
 
 # from audiblez.database import load_all_user_settings, save_user_setting # Now use db. prefix
 
+
+
 # Windows-specific imports for dark mode support
 if platform.system() == 'Windows':
     try:
@@ -70,6 +72,25 @@ palettes = {
     }
 }
 theme = palettes['light'] # Global theme variable
+
+def get_best_device():
+    import torch
+    # Only use MPS if available and not on macOS (darwin) or if user has not overridden
+    # But, on macOS, check for known problematic libraries and warn or fallback to CPU if needed.
+    import platform
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        # Extra runtime check: try allocating a tensor on MPS to see if it works
+        try:
+            x = torch.ones(1, device="mps")
+            # Optionally: check for known problematic libraries here
+            return "mps"
+        except Exception:
+            # If allocation fails, fallback to CPU
+            return "cpu"
+    elif torch.cuda.is_available():
+        return "cuda"
+    else:
+        return "cpu"
 
 # Windows dark mode support functions
 def set_windows_dark_mode(hwnd, enable_dark_mode):
@@ -149,7 +170,7 @@ class ThemedMessageDialog(wx.Dialog):
             button_sizer.Add(yes_btn, 0, wx.ALL, 5)
             button_sizer.Add(no_btn, 0, wx.ALL, 5)
             yes_btn.SetDefault()
-        elif style & wx.OK_CANCEL:
+        elif (hasattr(wx, "OK_CANCEL") and style & wx.OK_CANCEL) or (style & (wx.OK | wx.CANCEL) == (wx.OK | wx.CANCEL)):
             ok_btn = wx.Button(panel, wx.ID_OK, "OK")
             cancel_btn = wx.Button(panel, wx.ID_CANCEL, "Cancel")
             button_sizer.Add(ok_btn, 0, wx.ALL, 5)
@@ -409,6 +430,7 @@ class MainWindow(wx.Frame):
             print(f"Error opening EPUB file {file_path}: {e}")
             show_themed_message(self, f"Failed to open or parse the EPUB file:\n\n{e}", "EPUB Error", wx.OK | wx.ICON_ERROR)
     def __init__(self, parent, title):
+        import wx
         screen_width, screen_h = wx.GetDisplaySize()
         self.window_width = int(screen_width * 0.6)
         super().__init__(parent, title=title, size=(self.window_width, self.window_width * 3 // 4))
@@ -1003,42 +1025,82 @@ class MainWindow(wx.Frame):
 
         engine_label = wx.StaticText(panel, label="Engine:")
         engine_toggle_panel = wx.Panel(panel)
+        engine_toggle_panel_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        engine_toggle_panel.SetSizer(engine_toggle_panel_sizer)
+
+        # Always add CPU toggle
         self.cpu_toggle = wx.ToggleButton(engine_toggle_panel, label="CPU")
-        self.cuda_toggle = wx.ToggleButton(engine_toggle_panel, label="CUDA")
-        self.engine_toggles = [self.cpu_toggle, self.cuda_toggle]
+        engine_toggle_panel_sizer.Add(self.cpu_toggle, 0, wx.ALL, 5)
+        self.engine_toggles = [self.cpu_toggle]
+
+        # Add CUDA toggle if available
+        self.cuda_toggle = None
+        if torch.cuda.is_available():
+            self.cuda_toggle = wx.ToggleButton(engine_toggle_panel, label="CUDA")
+            engine_toggle_panel_sizer.Add(self.cuda_toggle, 0, wx.ALL, 5)
+            self.engine_toggles.append(self.cuda_toggle)
+
+        # Add MPS toggle if available (macOS)
+        self.mps_toggle = None
+        try:
+            mps_available = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+        except Exception as e:
+            mps_available = False
+        if mps_available:
+            self.mps_toggle = wx.ToggleButton(engine_toggle_panel, label="MPS")
+            engine_toggle_panel_sizer.Add(self.mps_toggle, 0, wx.ALL, 5)
+            self.engine_toggles.append(self.mps_toggle)
 
         def on_select_engine(engine_type):
             torch.set_default_device(engine_type)
-            db.save_user_setting('engine', engine_type)  # Use db prefix
+            db.save_user_setting('engine', engine_type)
             print(f"Engine set to {engine_type} and saved.")
 
         def on_engine_toggle(event):
             toggled_button = event.GetEventObject()
-            toggled_button.SetValue(True)  # Keep it pressed
+            toggled_button.SetValue(True)
             for toggle in self.engine_toggles:
                 if toggle != toggled_button:
                     toggle.SetValue(False)
-            engine_type = 'cuda' if toggled_button == self.cuda_toggle else 'cpu'
+            if toggled_button == self.cpu_toggle:
+                engine_type = 'cpu'
+            elif self.cuda_toggle and toggled_button == self.cuda_toggle:
+                engine_type = 'cuda'
+            elif self.mps_toggle and toggled_button == self.mps_toggle:
+                engine_type = 'mps'
+            else:
+                engine_type = 'cpu'
             on_select_engine(engine_type)
 
         self.cpu_toggle.Bind(wx.EVT_TOGGLEBUTTON, on_engine_toggle)
-        self.cuda_toggle.Bind(wx.EVT_TOGGLEBUTTON, on_engine_toggle)
+        if self.cuda_toggle:
+            self.cuda_toggle.Bind(wx.EVT_TOGGLEBUTTON, on_engine_toggle)
+        if self.mps_toggle:
+            self.mps_toggle.Bind(wx.EVT_TOGGLEBUTTON, on_engine_toggle)
 
         # Load saved engine or set default
         saved_engine = self.user_settings.get('engine')
-        if saved_engine == 'cuda' and torch.cuda.is_available():
+        device = get_best_device()
+        if saved_engine in ['cuda', 'mps', 'cpu']:
+            if saved_engine == 'cuda' and torch.cuda.is_available():
+                device = 'cuda'
+            elif saved_engine == 'mps' and self.mps_toggle:
+                device = 'mps'
+            elif saved_engine == 'cpu':
+                device = 'cpu'
+
+        # Set toggle state
+        if device == 'cuda' and self.cuda_toggle:
             self.cuda_toggle.SetValue(True)
-            torch.set_default_device('cuda')
+        elif device == 'mps' and self.mps_toggle:
+            self.mps_toggle.SetValue(True)
         else:
             self.cpu_toggle.SetValue(True)
-            torch.set_default_device('cpu')
+
+        torch.set_default_device(device)
 
         sizer.Add(engine_label, pos=(0, 0), flag=wx.ALL, border=5)
         sizer.Add(engine_toggle_panel, pos=(0, 1), flag=wx.ALL, border=5)
-        engine_toggle_panel_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        engine_toggle_panel.SetSizer(engine_toggle_panel_sizer)
-        engine_toggle_panel_sizer.Add(self.cpu_toggle, 0, wx.ALL, 5)
-        engine_toggle_panel_sizer.Add(self.cuda_toggle, 0, wx.ALL, 5)
 
         # Add file dialog selector to select output folder
         output_folder_label = wx.StaticText(panel, label="Output Folder:")
@@ -2509,6 +2571,9 @@ class MainWindow(wx.Frame):
         self.preview_threads.append(thread)
 
     def on_start(self, event):
+        if platform.system() == "macOS":
+            import caffeine
+            caffeine.on(display=False)  # Prevent sleep during synthesis
         self.synthesis_in_progress = True
         file_path = self.selected_file_path
         selected_chapters = []

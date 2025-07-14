@@ -25,6 +25,19 @@ import soundfile
 import spacy
 import torch
 from bs4 import BeautifulSoup
+
+def get_best_device():
+    """
+    Determine the best available device for PyTorch.
+    Returns:
+        str: 'cuda', 'mps', or 'cpu'
+    """
+    if torch.cuda.is_available():
+        return 'cuda'
+    elif torch.backends.mps.is_available():
+        return 'mps'
+    else:
+        return 'cpu'
 from chatterbox import ChatterboxTTS
 from ebooklib import epub
 import ebooklib
